@@ -1,0 +1,878 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<meta name="description" content="HydraRec — Sistema de alerta climático hiperlocal para os bairros do Recife, PE"/>
+<meta name="theme-color" content="#0d0e11"/>
+<link rel="icon" href="/icon.svg" type="image/svg+xml"/>
+<link rel="manifest" href="/manifest.json"/>
+<link rel="apple-touch-icon" href="/icon.svg"/>
+<title>the.weather | HydraRec</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@100;200;300;400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body,#root{width:100%;height:100%;overflow:hidden;background:#0d0e11}
+.skip-link{position:absolute;top:-60px;left:16px;background:#e8a030;color:#000;padding:8px 16px;border-radius:4px;font-family:Outfit,sans-serif;font-size:13px;font-weight:600;z-index:9999;transition:top .2s;text-decoration:none}
+.skip-link:focus{top:16px}
+:focus-visible{outline:2px solid #e8a030;outline-offset:3px;border-radius:4px}
+.scroll-x{overflow-x:auto;scrollbar-width:none}.scroll-x::-webkit-scrollbar{display:none}
+.scroll-y{overflow-y:auto;scrollbar-width:none}.scroll-y::-webkit-scrollbar{display:none}
+
+@keyframes rain{0%{transform:translateY(-10px) translateX(0);opacity:0}10%{opacity:.6}90%{opacity:.3}100%{transform:translateY(110vh) translateX(-40px);opacity:0}}
+@keyframes rainHeavy{0%{transform:translateY(-10px) translateX(0);opacity:0}10%{opacity:.85}90%{opacity:.5}100%{transform:translateY(110vh) translateX(-60px);opacity:0}}
+@keyframes cloudDrift{0%,100%{transform:translateX(0)}50%{transform:translateX(18px)}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes lightning{0%{opacity:0}4%{opacity:.6}8%{opacity:0}13%{opacity:.35}17%{opacity:0}100%{opacity:0}}
+@keyframes logoReveal{0%{opacity:0;transform:translateY(16px) scale(.96)}100%{opacity:1;transform:none}}
+@keyframes loadScreenOut{0%{opacity:1}100%{opacity:0}}
+@keyframes glowPulse{0%,100%{filter:drop-shadow(0 0 14px rgba(232,160,48,.45))}50%{filter:drop-shadow(0 0 32px rgba(232,160,48,.9))}}
+@keyframes taglineIn{0%{opacity:0;letter-spacing:.35em}100%{opacity:1;letter-spacing:.22em}}
+@keyframes numberPop{0%{transform:scale(.82);opacity:0}60%{transform:scale(1.04)}100%{transform:scale(1);opacity:1}}
+@keyframes slideInLeft{from{opacity:0;transform:translateX(-18px)}to{opacity:1;transform:translateX(0)}}
+@keyframes slideInUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:translateY(0)}}
+@keyframes alertFlash{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,0)}50%{box-shadow:0 0 0 6px rgba(239,68,68,.2)}}
+@keyframes shimmer{0%{opacity:.3}50%{opacity:.7}100%{opacity:.3}}
+
+.fade-in{animation:fadeUp .45s ease forwards}
+.rain-container{position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:1}
+.rain-drop{position:absolute;width:1px;background:linear-gradient(transparent,rgba(200,220,255,.5));border-radius:1px;animation:rain linear infinite}
+.rain-drop.heavy{width:1.5px;background:linear-gradient(transparent,rgba(200,220,255,.7));animation:rainHeavy linear infinite}
+.light .rain-drop{background:linear-gradient(transparent,rgba(80,100,140,.3))}
+.light .rain-drop.heavy{background:linear-gradient(transparent,rgba(80,100,140,.5))}
+
+@media(max-width:768px){
+  .desktop-only{display:none!important}
+  .sidebar-panel{position:fixed!important;left:0!important;top:0!important;bottom:0!important;width:290px!important;z-index:60!important;transform:translateX(-100%);transition:transform .32s cubic-bezier(.4,0,.2,1)}
+  .sidebar-panel.open{transform:translateX(0)!important}
+  .mob-overlay{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.5);backdrop-filter:blur(4px)}
+}
+@media(min-width:769px){
+  .mobile-only{display:none!important}
+  .sidebar-panel{position:relative!important;transform:none!important;transition:none!important}
+}
+</style>
+</head>
+<body>
+<a href="#main-content" class="skip-link">Pular para o conteúdo principal</a>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+/* ═══════════════════════════════════════════════════════
+   DADOS ESTÁTICOS
+═══════════════════════════════════════════════════════ */
+const ALL_BAIRROS = ["Aflitos","Afogados","Água Fria","Alto do Mandu","Alto José Bonifácio","Alto José do Pinho","Apipucos","Areias","Arruda","Barro","Beberibe","Boa Viagem","Boa Vista","Bomba do Hemetério","Bongi","Brasília Teimosa","Brejo da Guabiraba","Brejo de Beberibe","Cabanga","Caçote","Campina do Barreto","Campo Grande","Casa Amarela","Casa Forte","Caxangá","Cidade Universitária","Coelho","Coelhos","Cohab","Coqueiral","Cordeiro","Córrego do Jenipapo","Derby","Dois Irmãos","Dois Unidos","Encruzilhada","Engenho do Meio","Espinheiro","Estância","Fundão","Graças","Guabiraba","Hipódromo","Ibura","Ilha do Retiro","Ilha Joana Bezerra","Imbiribeira","Ipsep","Iputinga","Jaqueira","Jiquiá","Jordão","Linha do Tiro","Macaxeira","Madalena","Mangabeira","Mangueira","Monteiro","Morro da Conceição","Mustardinha","Nova Descoberta","Paissandu","Parnamirim","Passarinho","Pau Ferro","Peixinhos","Pina","Poço da Panela","Ponta de Campina","Ponto de Parada","Porto da Madeira","Prado","Recife Antigo","Rosarinho","San Martin","Sancho","Santana","Santo Amaro","Santo Antônio","São José","Sítio dos Pintos","Soledade","Sudene","Tamarineira","Tejipió","Torre","Torreão","Torrões","Totó","Várzea","Vasco da Gama","Zumbi"];
+
+const FEATURED = ["Boa Viagem","Jordão","Ibura","Recife Antigo","Afogados","Dois Irmãos","Pina"];
+
+const CONDITION_THEME = {
+  "Tempestade com Chuva Forte": { darkBg:"linear-gradient(160deg,#0e1015 0%,#161a22 50%,#0e1218 100%)", lightBg:"linear-gradient(160deg,#b0bac8 0%,#9aa4b2 50%,#a8b2c0 100%)", rain:"heavy",  cloud:.95, hasThunder:true  },
+  "Chuva Moderada":             { darkBg:"linear-gradient(160deg,#101520 0%,#181e2e 50%,#101824 100%)", lightBg:"linear-gradient(160deg,#c0c8d4 0%,#aab4c4 50%,#b8c4d2 100%)", rain:"normal", cloud:.85, hasThunder:false },
+  "Chuva com Trovoadas":        { darkBg:"linear-gradient(160deg,#0f121c 0%,#161c2c 50%,#0f121e 100%)", lightBg:"linear-gradient(160deg,#b4bcc8 0%,#a0aab8 50%,#b0bac8 100%)", rain:"normal", cloud:.90, hasThunder:true  },
+  "Nublado com Chuviscos":      { darkBg:"linear-gradient(160deg,#121416 0%,#1a1d24 50%,#12161e 100%)", lightBg:"linear-gradient(160deg,#caced8 0%,#b8bec8 50%,#c4c8d4 100%)", rain:"light",  cloud:.75, hasThunder:false },
+  "Parcialmente Nublado":       { darkBg:"linear-gradient(150deg,#101828 0%,#1a2840 50%,#101e34 100%)", lightBg:"linear-gradient(150deg,#d8e4f4 0%,#c4d4ea 50%,#ccdaee 100%)", rain:"none",   cloud:.40, hasThunder:false },
+  "Ensolarado":                 { darkBg:"linear-gradient(150deg,#101c36 0%,#162c4e 50%,#101e3c 100%)", lightBg:"linear-gradient(150deg,#ddeeff 0%,#c8e0ff 50%,#d4e8ff 100%)", rain:"none",   cloud:.10, hasThunder:false },
+};
+
+/* ═══════════════════════════════════════════════════════
+   HELPERS
+═══════════════════════════════════════════════════════ */
+const scoreColor = s => s<20?"#22c55e":s<40?"#84cc16":s<60?"#eab308":s<75?"#f97316":"#ef4444";
+const scoreLabel = s => s<20?"Seguro":s<40?"Baixo":s<60?"Moderado":s<75?"Alto":"Crítico";
+const uvLabel    = u => u<=2?"Baixo":u<=5?"Moderado":u<=7?"Alto":u<=10?"Muito Alto":"Extremo";
+const uvColor    = u => u<=2?"#22c55e":u<=5?"#eab308":u<=7?"#f97316":u<=10?"#ef4444":"#a855f7";
+
+/* ═══════════════════════════════════════════════════════
+   API HELPERS
+═══════════════════════════════════════════════════════ */
+function wmoToCondition(code) {
+  if (code === 0) return "Ensolarado";
+  if (code <= 2)  return "Parcialmente Nublado";
+  if (code === 3) return "Nublado com Chuviscos";
+  if (code <= 48) return "Nublado com Chuviscos";
+  if (code <= 57) return "Nublado com Chuviscos";
+  if (code <= 67) return "Chuva Moderada";
+  if (code <= 82) return "Chuva Moderada";
+  if (code === 95) return "Chuva com Trovoadas";
+  return "Tempestade com Chuva Forte";
+}
+
+function degToDir(deg) {
+  const dirs = ["N","NE","E","SE","S","SW","W","NW"];
+  return dirs[Math.round((deg || 0) / 45) % 8];
+}
+
+function visFromCode(code) {
+  if (code === 0) return 12;
+  if (code <= 2)  return 10;
+  if (code === 3) return 8;
+  if (code <= 48) return 2;
+  if (code <= 57) return 5;
+  if (code <= 67) return 4;
+  if (code <= 82) return 6;
+  return 2;
+}
+
+
+function mapApiToUI(name, apiData) {
+  const cur    = (apiData.weather && apiData.weather.current) || {};
+  const risk   = apiData.risk || {};
+  const raw    = risk.rawValues || {};
+  const hourly = (apiData.weather && apiData.weather.hourly) || {};
+
+  const wCode   = cur.weather_code || 0;
+  const windDeg = cur.wind_direction_10m || 0;
+  const windDir = degToDir(windDeg);
+  const windSpd = Math.round(cur.wind_speed_10m || 0);
+
+  /* Últimas 6 horas — índices 18–23 das 24h de histórico */
+  const allPrecip = hourly.precipitation || [];
+  const allTemps  = hourly.temperature_2m || [];
+  const rain6h    = allPrecip.slice(18, 24).map(v => v != null ? Math.round(v * 10) / 10 : 0);
+  const tempChart = allTemps.slice(18, 24).map(v => v != null ? Math.round(v) : Math.round(cur.temperature_2m || 0));
+  while (rain6h.length  < 6) rain6h.unshift(0);
+  while (tempChart.length < 6) tempChart.unshift(tempChart[0] || Math.round(cur.temperature_2m || 0));
+
+  const baseTemp = Math.round(cur.temperature_2m || 0);
+  const dailyForecast = ((apiData.forecastDaily) || []).slice(0, 6).map(f => ({
+    high: f.high != null ? f.high : baseTemp,
+    low:  f.low  != null ? f.low  : baseTemp - 4,
+    rain: f.rain != null ? f.rain : 0,
+  }));
+  while (dailyForecast.length < 6) {
+    dailyForecast.push({ high: baseTemp, low: baseTemp - 4, rain: 0 });
+  }
+
+  return {
+    name,
+    temp:          baseTemp,
+    feelsLike:     Math.round(cur.apparent_temperature || cur.temperature_2m || 0),
+    hydraScore:    risk.score || 0,
+    condition:     wmoToCondition(wCode),
+    wind:          `${windDir} ${windSpd} km/h`,
+    windDeg,
+    humidity:      Math.round(cur.relative_humidity_2m || 0),
+    tide:          raw.mareAltura != null ? raw.mareAltura : 1.5,
+    soil:          Math.round((raw.saturacaoSolo || 0) * 100),
+    pressure:      Math.round(raw.pressao || cur.surface_pressure || 1013),
+    visibility:    visFromCode(wCode),
+    uv:            Math.round(raw.uvIndex != null ? raw.uvIndex : (cur.uv_index || 0)),
+    rain6h,
+    tempChart,
+    forecast:      dailyForecast,
+    bulletin:      "",
+    others:        [],
+    /* campos de risco detalhados para painel IA */
+    chuvaPrevista: raw.chuvaPrevista != null ? raw.chuvaPrevista : 0,
+    chuva24h:      raw.chuva24h      != null ? raw.chuva24h      : 0,
+    rajadaVento:   raw.rajadaVento   != null ? Math.round(raw.rajadaVento) : windSpd,
+    nivel:         risk.nivel || "BAIXO",
+  };
+}
+
+async function apiFetchNarrative(cityName, riskData) {
+  const res = await fetch('/api/narrative', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ cityName, riskData }),
+  });
+  if (!res.ok) throw new Error(`Narrative ${res.status}`);
+  const d = await res.json();
+  return d.narrative;
+}
+
+async function apiFetchScores(bairroNames) {
+  const res = await fetch('/api/scores', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ bairros: bairroNames }),
+  });
+  if (!res.ok) throw new Error(`Scores ${res.status}`);
+  const d = await res.json();
+  return d.scores.map(s => ({ n: s.name, t: s.temp, s: s.score }));
+}
+
+/* ═══════════════════════════════════════════════════════
+   SOUND MANAGER
+═══════════════════════════════════════════════════════ */
+class SoundManager {
+  constructor() {
+    this.ctx=null; this.rainSrc=null; this.rainGain=null;
+    this.thunderTimer=null; this._pendingRain=null; this.enabled=true;
+  }
+  _boot() {
+    if (!this.ctx) {
+      try { this.ctx=new(window.AudioContext||window.webkitAudioContext)(); if(this._pendingRain){this._startRainNow(this._pendingRain);this._pendingRain=null;} }catch(e){}
+    } else if(this.ctx.state==='suspended') this.ctx.resume();
+  }
+  playClick() {
+    this._boot(); if(!this.enabled||!this.ctx)return;
+    try{const o=this.ctx.createOscillator(),g=this.ctx.createGain();o.connect(g);g.connect(this.ctx.destination);o.type="sine";o.frequency.value=880;const t=this.ctx.currentTime;g.gain.setValueAtTime(.07,t);g.gain.exponentialRampToValueAtTime(.001,t+.07);o.start(t);o.stop(t+.07);}catch(e){}
+  }
+  playAlert(score) {
+    if(!this.enabled||!this.ctx)return;
+    try{const freqs=score>=85?[880,660,440,330]:score>=75?[660,550,440]:[550,440];freqs.forEach((f,i)=>{const o=this.ctx.createOscillator(),g=this.ctx.createGain();o.connect(g);g.connect(this.ctx.destination);o.frequency.value=f;o.type="sine";const t=this.ctx.currentTime+i*.22;g.gain.setValueAtTime(0,t);g.gain.linearRampToValueAtTime(.16,t+.05);g.gain.exponentialRampToValueAtTime(.001,t+.2);o.start(t);o.stop(t+.2);});}catch(e){}
+  }
+  playThunder() {
+    if(!this.enabled||!this.ctx)return;
+    try{const sr=this.ctx.sampleRate,dur=2.5+Math.random()*1.8,buf=this.ctx.createBuffer(1,Math.floor(sr*dur),sr),d=buf.getChannelData(0);let b0=0,b1=0,b2=0,b3=0,b4=0,b5=0,b6=0;for(let i=0;i<d.length;i++){const w=Math.random()*2-1;b0=.99886*b0+w*.0555179;b1=.99332*b1+w*.0750759;b2=.96900*b2+w*.1538520;b3=.86650*b3+w*.3104856;b4=.55000*b4+w*.5329522;b5=-.7616*b5-w*.0168980;const pink=(b0+b1+b2+b3+b4+b5+b6+w*.5362)*.11;b6=w*.115926;d[i]=pink*Math.pow(Math.max(0,1-i/d.length),.55);}const src=this.ctx.createBufferSource();src.buffer=buf;const filt=this.ctx.createBiquadFilter();filt.type="lowpass";filt.frequency.value=160+Math.random()*100;filt.Q.value=.8;const gain=this.ctx.createGain(),t=this.ctx.currentTime;gain.gain.setValueAtTime(0,t);gain.gain.linearRampToValueAtTime(.55+Math.random()*.25,t+.06);gain.gain.exponentialRampToValueAtTime(.001,t+dur);src.connect(filt);filt.connect(gain);gain.connect(this.ctx.destination);src.start(t);}catch(e){}
+  }
+  _startRainNow(intensity) {
+    this.stopRain(); if(!this.ctx||!this.enabled)return;
+    try{const sr=this.ctx.sampleRate,buf=this.ctx.createBuffer(1,sr*2,sr),d=buf.getChannelData(0);for(let i=0;i<d.length;i++)d[i]=Math.random()*2-1;const src=this.ctx.createBufferSource();src.buffer=buf;src.loop=true;const f1=this.ctx.createBiquadFilter();f1.type="bandpass";f1.Q.value=.4;f1.frequency.value=intensity==="heavy"?1800:intensity==="normal"?1200:700;const gain=this.ctx.createGain(),vol=intensity==="heavy"?.09:intensity==="normal"?.055:.025;gain.gain.setValueAtTime(0,this.ctx.currentTime);gain.gain.linearRampToValueAtTime(vol,this.ctx.currentTime+1.5);src.connect(f1);f1.connect(gain);gain.connect(this.ctx.destination);src.start();this.rainSrc=src;this.rainGain=gain;}catch(e){}
+  }
+  startRain(intensity) {
+    if(intensity==="none"||!this.enabled){this.stopRain();this._pendingRain=null;return;}
+    if(!this.ctx){this._pendingRain=intensity;return;}
+    this._startRainNow(intensity);
+  }
+  stopRain() {
+    this._pendingRain=null;
+    try{if(this.rainGain){this.rainGain.gain.setValueAtTime(this.rainGain.gain.value,this.ctx.currentTime);this.rainGain.gain.linearRampToValueAtTime(.001,this.ctx.currentTime+.8);}const src=this.rainSrc,gain=this.rainGain;setTimeout(()=>{try{src&&src.stop();src&&src.disconnect();gain&&gain.disconnect();}catch(e){}},900);this.rainSrc=null;this.rainGain=null;}catch(e){}
+  }
+  startThunderSchedule() {
+    this.stopThunderSchedule();
+    const schedule=()=>{this.thunderTimer=setTimeout(()=>{this.playThunder();schedule();},5000+Math.random()*14000);};schedule();
+  }
+  stopThunderSchedule(){if(this.thunderTimer){clearTimeout(this.thunderTimer);this.thunderTimer=null;}}
+  setEnabled(v){this.enabled=v;if(!v){this.stopRain();this.stopThunderSchedule();}}
+}
+const soundMgr = new SoundManager();
+
+/* ═══════════════════════════════════════════════════════  LOGO */
+function HydraLogo({ size=44, showText=true, light=false }) {
+  const tc=light?"#1a1a1a":"#ffffff",ts=light?"rgba(0,0,0,.4)":"rgba(255,255,255,.45)",div=light?"rgba(0,0,0,.12)":"rgba(255,255,255,.1)";
+  const id=`lg${showText?'t':'m'}${light?'l':'d'}`;
+  return (
+    <svg width={showText?160:size} height={size} viewBox={showText?"0 0 160 44":"0 0 44 44"} fill="none" aria-label="HydraRec">
+      <defs>
+        <linearGradient id={id+"1"} x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="#e8a030"/><stop offset="100%" stopColor="#c97820"/></linearGradient>
+        <linearGradient id={id+"2"} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="rgba(232,160,48,.28)"/><stop offset="100%" stopColor="rgba(232,160,48,0)"/></linearGradient>
+      </defs>
+      <circle cx="22" cy="22" r="19" stroke={`url(#${id}1)`} strokeWidth="1.2" strokeOpacity=".3"/>
+      <path d="M10 22A12 12 0 0 1 34 22" stroke={`url(#${id}1)`} strokeWidth="1.5" strokeLinecap="round"/>
+      <path d="M22 10C22 10 14 18 14 23.5A8 8 0 0 0 30 23.5C30 18 22 10 22 10Z" fill={`url(#${id}2)`} stroke={`url(#${id}1)`} strokeWidth="1.4" strokeLinejoin="round"/>
+      <path d="M13 31Q16 28 19 31" stroke={`url(#${id}1)`} strokeWidth="1.3" strokeLinecap="round" fill="none"/>
+      <line x1="22" y1="29" x2="22" y2="31.5" stroke={`url(#${id}1)`} strokeWidth="1.3" strokeLinecap="round"/>
+      <path d="M25 31Q28 28 31 31" stroke={`url(#${id}1)`} strokeWidth="1.3" strokeLinecap="round" fill="none"/>
+      <circle cx="22" cy="23" r="2" fill={`url(#${id}1)`}/>
+      {showText&&<><text x="52" y="18" fontFamily="Outfit,sans-serif" fontWeight="600" fontSize="14" fill={tc} letterSpacing="2.5">HYDRA</text><text x="52" y="34" fontFamily="Outfit,sans-serif" fontWeight="200" fontSize="14" fill={ts} letterSpacing="4.5">REC</text><line x1="52" y1="21" x2="142" y2="21" stroke={div} strokeWidth=".5"/></>}
+    </svg>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════  LOADING */
+function LoadingScreen({ onDone }) {
+  const [progress,setProgress]=useState(0);
+  const [status,setStatus]=useState("Inicializando sistema...");
+  const [out,setOut]=useState(false);
+  const steps=useMemo(()=>[[200,0,"Inicializando sistema..."],[700,18,"Carregando bairros do Recife..."],[1300,40,"Obtendo dados climáticos..."],[1900,62,"Calculando Hydra Score..."],[2500,82,"Gerando boletim Defesa Civil..."],[3100,100,"Sistema pronto."]],[]);
+  useEffect(()=>{
+    const ts=steps.map(([at,p,s])=>setTimeout(()=>{setProgress(p);setStatus(s);},at));
+    const t1=setTimeout(()=>setOut(true),3700),t2=setTimeout(onDone,4300);
+    return()=>{ts.forEach(clearTimeout);clearTimeout(t1);clearTimeout(t2);};
+  },[]);
+  const drops=useMemo(()=>Array.from({length:55},(_,i)=>({id:i,l:Math.random()*110-5,h:12+Math.random()*10,d:Math.random()*3,dur:.7+Math.random()*.5})),[]);
+  return (
+    <div role="status" aria-label="Carregando HydraRec" aria-live="polite"
+      style={{position:"fixed",inset:0,zIndex:1000,background:"linear-gradient(160deg,#0c0e13 0%,#111520 50%,#0c0e13 100%)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",animation:out?"loadScreenOut .6s ease forwards":"fadeIn .4s ease"}}>
+      <div className="rain-container" style={{opacity:.3}}>{drops.map(d=><div key={d.id} className="rain-drop" style={{left:`${d.l}%`,height:`${d.h}px`,top:0,animationDuration:`${d.dur}s`,animationDelay:`${d.d}s`}}/>)}</div>
+      <div style={{position:"absolute",width:500,height:500,borderRadius:"50%",background:"radial-gradient(circle,rgba(232,160,48,.07) 0%,transparent 70%)",pointerEvents:"none"}}/>
+      <div style={{animation:"logoReveal .9s cubic-bezier(.16,1,.3,1) .2s both",display:"flex",flexDirection:"column",alignItems:"center",gap:32}}>
+        <div style={{animation:"glowPulse 2.5s ease-in-out infinite"}}><HydraLogo size={92} showText={false}/></div>
+        <div style={{textAlign:"center"}}>
+          <div style={{fontFamily:"Outfit",fontWeight:600,fontSize:30,color:"#fff",letterSpacing:".28em",textTransform:"uppercase",lineHeight:1}}>HYDRA<span style={{fontWeight:200,color:"rgba(255,255,255,.45)"}}>REC</span></div>
+          <div style={{fontFamily:"Outfit",fontWeight:300,fontSize:11,color:"rgba(255,255,255,.25)",letterSpacing:".22em",textTransform:"uppercase",marginTop:8,animation:"taglineIn 1.2s ease .8s both"}}>DEFESA CIVIL · RECIFE, PE</div>
+        </div>
+        <div style={{width:280,animation:"logoReveal .6s ease .6s both"}}>
+          <div style={{height:1,background:"rgba(255,255,255,.07)",borderRadius:1,overflow:"hidden",marginBottom:12}}>
+            <div style={{height:"100%",borderRadius:1,background:"linear-gradient(90deg,rgba(232,160,48,.55),#e8a030)",width:`${progress}%`,transition:"width .6s cubic-bezier(.4,0,.2,1)",boxShadow:"0 0 10px rgba(232,160,48,.5)"}}/>
+          </div>
+          <div style={{display:"flex",justifyContent:"space-between"}}>
+            <div style={{fontFamily:"Outfit",fontSize:10,color:"rgba(255,255,255,.28)"}}>{status}</div>
+            <div style={{fontFamily:"Outfit",fontSize:10,color:"rgba(232,160,48,.65)",fontWeight:500}}>{progress}%</div>
+          </div>
+        </div>
+      </div>
+      <div style={{position:"absolute",bottom:28,fontSize:9,fontFamily:"Outfit",color:"rgba(255,255,255,.14)",letterSpacing:".16em",textTransform:"uppercase"}}>SISTEMA DE ALERTA CLIMÁTICO HIPERLOCAL</div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════  RAIN */
+function Rain({ intensity }) {
+  if(intensity==="none")return null;
+  const count=intensity==="heavy"?120:intensity==="normal"?80:40;
+  const drops=useMemo(()=>Array.from({length:count},(_,i)=>({id:i,left:Math.random()*110-5,height:intensity==="heavy"?18+Math.random()*14:12+Math.random()*10,delay:Math.random()*3,duration:intensity==="heavy"?.6+Math.random()*.4:.8+Math.random()*.6})),[intensity]);
+  return <div className="rain-container">{drops.map(d=><div key={d.id} className={`rain-drop${intensity==="heavy"?" heavy":""}`} style={{left:`${d.left}%`,height:`${d.height}px`,top:0,animationDuration:`${d.duration}s`,animationDelay:`${d.delay}s`}}/>)}</div>;
+}
+
+/* ═══════════════════════════════════════════════════════  LIGHTNING */
+function Lightning({ onFlash }) {
+  const [flash,setFlash]=useState(false);
+  useEffect(()=>{let t;const go=()=>{t=setTimeout(()=>{setFlash(true);onFlash&&onFlash();setTimeout(()=>setFlash(false),500);go();},4000+Math.random()*10000);};go();return()=>clearTimeout(t);},[]);
+  if(!flash)return null;
+  return <div aria-hidden="true" style={{position:"absolute",inset:0,zIndex:2,pointerEvents:"none",background:"rgba(220,228,255,.05)",animation:"lightning .5s ease"}}/>;
+}
+
+/* ═══════════════════════════════════════════════════════  WIND COMPASS */
+function WindCompass({ deg, light }) {
+  const tc=light?"rgba(0,0,0,.5)":"rgba(255,255,255,.5)";
+  const dirs=["N","NE","E","SE","S","SW","W","NW"];
+  const label=dirs[Math.round(deg/45)%8];
+  return (
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:4}}>
+      <svg width="36" height="36" viewBox="0 0 36 36" aria-label={`Vento: ${label}`}>
+        <circle cx="18" cy="18" r="16" stroke={light?"rgba(0,0,0,.1)":"rgba(255,255,255,.1)"} strokeWidth="1" fill="none"/>
+        {["N","E","S","W"].map((d,i)=><text key={d} x={i===0?18:i===1?31:i===2?18:5} y={i===0?7:i===2?33:21} textAnchor="middle" fontFamily="Outfit" fontSize="6" fill={tc}>{d}</text>)}
+        <g transform={`rotate(${deg}, 18, 18)`}>
+          <polygon points="18,5 20.5,18 18,16 15.5,18" fill="#e8a030"/>
+          <polygon points="18,31 20.5,18 18,20 15.5,18" fill={light?"rgba(0,0,0,.25)":"rgba(255,255,255,.25)"}/>
+        </g>
+        <circle cx="18" cy="18" r="2" fill="#e8a030"/>
+      </svg>
+      <span style={{fontSize:9,color:tc,letterSpacing:".06em"}}>{label}</span>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════  SPARKLINE */
+function Sparkline({ data, color="#e8a030", width=160, height=50 }) {
+  const min=Math.min(...data),max=Math.max(...data),range=max-min||1;
+  const pts=data.map((v,i)=>[(i/(data.length-1))*width,height-((v-min)/range)*(height-10)-5]);
+  const d="M "+pts.map(p=>p.join(",")).join(" L ");
+  const area=`M ${pts[0].join(",")} L ${pts.map(p=>p.join(",")).join(" L ")} L ${width},${height} L 0,${height} Z`;
+  return (
+    <svg width={width} height={height} style={{overflow:"visible"}} aria-hidden="true">
+      <defs><linearGradient id="sgl" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={color} stopOpacity=".3"/><stop offset="100%" stopColor={color} stopOpacity="0"/></linearGradient></defs>
+      <path d={area} fill="url(#sgl)"/>
+      <path d={d} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+      {pts.map(([x,y],i)=><circle key={i} cx={x} cy={y} r="2.5" fill={color}/>)}
+    </svg>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════  FORECAST WAVE */
+function ForecastWave({ forecast, width, height=58, light }) {
+  const highs=forecast.map(f=>f.high);
+  const min=Math.min(...highs)-2,max=Math.max(...highs)+2,range=max-min||1;
+  const colW=width/forecast.length;
+  const pts=highs.map((v,i)=>[i*colW+colW/2,height-((v-min)/range)*(height-12)-6]);
+  let d=`M ${pts[0].join(",")}`;
+  for(let i=1;i<pts.length;i++){const cx=pts[i-1][0]+(pts[i][0]-pts[i-1][0])/2;d+=` C ${cx},${pts[i-1][1]} ${cx},${pts[i][1]} ${pts[i].join(",")}`;}
+  const area=d+` L ${pts[pts.length-1][0]},${height} L ${pts[0][0]},${height} Z`;
+  const c=light?"#c97820":"#e8a030";
+  return (
+    <svg width={width} height={height} style={{position:"absolute",bottom:0,left:0,pointerEvents:"none"}} aria-hidden="true">
+      <defs><linearGradient id="wgl" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={c} stopOpacity=".22"/><stop offset="100%" stopColor={c} stopOpacity="0"/></linearGradient></defs>
+      <path d={area} fill="url(#wgl)"/>
+      <path d={d} fill="none" stroke={c} strokeWidth="2" strokeLinecap="round"/>
+    </svg>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════  SCORE RING */
+function ScoreRing({ score, light, size=70 }) {
+  const r=(size/2)-7,circ=2*Math.PI*r,offset=circ-(score/100)*circ,color=scoreColor(score);
+  return (
+    <svg width={size} height={size} style={{transform:"rotate(-90deg)"}} aria-hidden="true">
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={light?"rgba(0,0,0,.1)":"rgba(255,255,255,.08)"} strokeWidth="4"/>
+      <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth="4" strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round" style={{transition:"stroke-dashoffset 1s ease,stroke .5s ease"}}/>
+    </svg>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════  SEARCH */
+function SearchDropdown({ value, onChange, light }) {
+  const [query,setQuery]=useState(""), [open,setOpen]=useState(false);
+  const ref=useRef(null);
+  const filtered=ALL_BAIRROS.filter(b=>b.toLowerCase().includes(query.toLowerCase())).slice(0,8);
+  useEffect(()=>{const h=e=>{if(ref.current&&!ref.current.contains(e.target))setOpen(false);};document.addEventListener("mousedown",h);return()=>document.removeEventListener("mousedown",h);},[]);
+  const bg=light?"rgba(0,0,0,.06)":"rgba(255,255,255,.06)",bd=light?"rgba(0,0,0,.12)":"rgba(255,255,255,.09)",tc=light?"rgba(0,0,0,.7)":"rgba(255,255,255,.75)";
+  return (
+    <div ref={ref} style={{position:"relative"}} role="combobox" aria-expanded={open} aria-haspopup="listbox" aria-label="Buscar bairro">
+      <div style={{display:"flex",alignItems:"center",gap:8,background:bg,borderRadius:8,padding:"7px 12px",border:`1px solid ${bd}`,cursor:"text"}} onClick={()=>setOpen(true)}>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={light?"rgba(0,0,0,.4)":"rgba(255,255,255,.4)"} strokeWidth="2" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        <input value={query} onChange={e=>{setQuery(e.target.value);setOpen(true);}} onFocus={()=>setOpen(true)} placeholder={value} aria-label="Nome do bairro"
+          style={{background:"none",border:"none",outline:"none",color:tc,fontFamily:"Outfit",fontSize:12,width:"100%",letterSpacing:".02em"}}/>
+      </div>
+      {open&&filtered.length>0&&(
+        <div role="listbox" style={{position:"absolute",top:"calc(100% + 6px)",left:0,right:0,zIndex:200,background:light?"rgba(240,236,228,.98)":"rgba(12,14,20,.98)",backdropFilter:"blur(20px)",border:`1px solid ${bd}`,borderRadius:8,overflow:"hidden"}}>
+          {filtered.map(b=>(
+            <div key={b} role="option" aria-selected={b===value} onMouseDown={()=>{onChange(b);setQuery("");setOpen(false);soundMgr.playClick();}}
+              style={{padding:"9px 14px",fontSize:12,color:tc,cursor:"pointer",fontFamily:"Outfit",borderBottom:`1px solid ${light?"rgba(0,0,0,.06)":"rgba(255,255,255,.05)"}`,transition:"background .12s"}}
+              onMouseEnter={e=>e.currentTarget.style.background=light?"rgba(0,0,0,.05)":"rgba(255,255,255,.06)"}
+              onMouseLeave={e=>e.currentTarget.style.background="transparent"}>{b}</div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════  LIVE CLOCK */
+function LiveClock({ light, compact }) {
+  const [now,setNow]=useState(new Date());
+  useEffect(()=>{const t=setInterval(()=>setNow(new Date()),1000);return()=>clearInterval(t);},[]);
+  const tc=light?"rgba(0,0,0,.85)":"#fff",sc=light?"rgba(0,0,0,.38)":"rgba(255,255,255,.38)";
+  return (
+    <div style={{textAlign:"right"}} aria-live="polite" aria-atomic="true">
+      <time dateTime={now.toISOString()} style={{fontFamily:"Outfit",fontWeight:200,fontSize:compact?20:34,color:tc,letterSpacing:"-.5px",lineHeight:1,display:"block",fontVariantNumeric:"tabular-nums"}}>
+        {now.toLocaleTimeString("pt-BR",{hour:"2-digit",minute:"2-digit",second:"2-digit"})}
+      </time>
+      <div style={{fontFamily:"Outfit",fontSize:compact?9:12,color:sc,letterSpacing:".04em",marginTop:4,textTransform:"capitalize"}}>
+        {now.toLocaleDateString("pt-BR",{weekday:"long",day:"numeric",month:"long",year:"numeric"})}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════  ICON BTN */
+function IconBtn({ onClick, label, children, light, active, danger }) {
+  const bg=danger&&active?"rgba(239,68,68,.14)":active?(light?"rgba(0,0,0,.1)":"rgba(255,255,255,.12)"):"transparent";
+  return (
+    <button onClick={()=>{soundMgr.playClick();onClick&&onClick();}} aria-label={label} title={label}
+      style={{display:"flex",alignItems:"center",justifyContent:"center",width:34,height:34,borderRadius:8,border:`1px solid ${light?"rgba(0,0,0,.12)":"rgba(255,255,255,.1)"}`,background:bg,cursor:"pointer",transition:"all .18s",flexShrink:0}}>
+      {children}
+    </button>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════  METRIC CHIP */
+function Chip({ label, value, color, light }) {
+  const bg=light?"rgba(0,0,0,.05)":"rgba(255,255,255,.06)",bd=light?"rgba(0,0,0,.1)":"rgba(255,255,255,.08)";
+  const tc=light?"rgba(0,0,0,.5)":"rgba(255,255,255,.45)",vc=light?"rgba(0,0,0,.8)":"#fff";
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:2,padding:"8px 12px",background:bg,borderRadius:8,border:`1px solid ${bd}`,minWidth:80,animation:"slideInUp .4s ease"}}>
+      <div style={{fontSize:9,color:tc,letterSpacing:".07em",textTransform:"uppercase"}}>{label}</div>
+      <div style={{fontSize:16,fontWeight:300,color:color||vc,letterSpacing:"-.3px"}}>{value}</div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════  AI BULLETIN PANEL */
+function AIBulletinPanel({ data, light }) {
+  const sc=data.hydraScore, sColor=scoreColor(sc);
+  const tc=light?"rgba(0,0,0,.92)":"rgba(255,255,255,.95)";
+  const tc2=light?"rgba(0,0,0,.72)":"rgba(255,255,255,.80)";
+  const tc3=light?"rgba(0,0,0,.52)":"rgba(255,255,255,.60)";
+  const div=light?"rgba(0,0,0,.12)":"rgba(255,255,255,.12)";
+  const acc=light?"#c97820":"#e8a030";
+
+  const bulletinReady = data.bulletin && data.bulletin !== "Gerando boletim IA...";
+
+  const riskRows = [
+    { l:"Chuva prevista 24h", v:`${data.chuvaPrevista} mm`, c: data.chuvaPrevista > 30 ? scoreColor(90) : data.chuvaPrevista > 15 ? scoreColor(55) : undefined },
+    { l:"Chuva acumulada 24h", v:`${data.chuva24h} mm` },
+    { l:"Umidade relativa",    v:`${data.humidity}%` },
+    { l:"Maré atual",         v:`${data.tide} m` },
+    { l:"Solo saturado",      v:`${data.soil}%`,   c: data.soil>80?scoreColor(90):data.soil>60?scoreColor(55):undefined },
+    { l:"Rajada máx.",        v:`${data.rajadaVento} km/h` },
+    { l:"Pressão atm.",       v:`${data.pressure} hPa` },
+    { l:"Visibilidade",       v:`${data.visibility} km` },
+  ];
+
+  return (
+    <div className="scroll-y" style={{display:"flex",flexDirection:"column",gap:20,height:"100%",paddingBottom:20,paddingRight:2}}>
+
+      {/* Score header */}
+      <div>
+        <div style={{fontSize:8,letterSpacing:".15em",textTransform:"uppercase",color:tc3,marginBottom:14}}>
+          Boletim Defesa Civil
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:14}}>
+          <div style={{position:"relative",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+            <ScoreRing score={sc} light={light} size={64}/>
+            <div style={{position:"absolute",textAlign:"center"}}>
+              <div style={{fontSize:13,fontWeight:600,color:sColor,lineHeight:1}}>{sc}</div>
+            </div>
+          </div>
+          <div>
+            <div style={{fontSize:20,fontWeight:300,color:sColor,letterSpacing:"-.3px",lineHeight:1}}>{scoreLabel(sc)}</div>
+            <div style={{fontSize:10,color:tc3,marginTop:3}}>Hydra Score · {data.nivel}</div>
+          </div>
+        </div>
+        {sc >= 75 && (
+          <div role="alert" style={{display:"flex",alignItems:"center",gap:7,padding:"7px 10px",background:"rgba(239,68,68,.1)",borderRadius:7,border:"1px solid rgba(239,68,68,.2)",animation:"alertFlash 2s ease infinite"}}>
+            <div style={{width:6,height:6,borderRadius:"50%",background:"#ef4444",animation:"pulse .8s ease infinite",flexShrink:0}}/>
+            <span style={{fontSize:10,color:"#ef4444",fontWeight:600,letterSpacing:".05em"}}>ALERTA ATIVO — {data.name}</span>
+          </div>
+        )}
+      </div>
+
+      <div style={{height:1,background:div}}/>
+
+      {/* AI narrative */}
+      <div>
+        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:12}}>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={acc} strokeWidth="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+          <div style={{fontSize:8,letterSpacing:".14em",textTransform:"uppercase",color:tc3}}>Análise IA · Gemini</div>
+        </div>
+        {bulletinReady ? (
+          <div style={{fontSize:12,color:tc2,lineHeight:1.9,animation:"fadeUp .5s ease"}}>{data.bulletin}</div>
+        ) : (
+          <div style={{display:"flex",alignItems:"center",gap:8}}>
+            <div style={{width:5,height:5,borderRadius:"50%",background:acc,animation:"pulse 1s ease infinite",flexShrink:0}}/>
+            <div style={{fontSize:11,color:tc3,animation:"shimmer 1.8s ease-in-out infinite"}}>Consultando Gemini...</div>
+          </div>
+        )}
+      </div>
+
+      <div style={{height:1,background:div}}/>
+
+      {/* Risk data rows */}
+      <div>
+        <div style={{fontSize:8,letterSpacing:".14em",textTransform:"uppercase",color:tc3,marginBottom:14}}>
+          Dados Hídricos
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:11}}>
+          {riskRows.map(({l,v,c})=>(
+            <div key={l} style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8}}>
+              <div style={{fontSize:10,color:tc3,lineHeight:1}}>{l}</div>
+              <div style={{fontSize:11,fontWeight:400,color:c||tc,textAlign:"right",letterSpacing:"-.2px"}}>{v}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{height:1,background:div}}/>
+
+      <div style={{fontSize:8,color:tc3,letterSpacing:".13em",textTransform:"uppercase",textAlign:"center"}}>
+        HYDRAREC · DEFESA CIVIL PE
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════  SIDEBAR */
+function Sidebar({ data, bairro, onChange, light, soundOn, onSoundToggle, onThemeToggle, onClose }) {
+  const sc=data.hydraScore, sColor=scoreColor(sc);
+  const tc=light?"rgba(0,0,0,.75)":"rgba(255,255,255,.75)",tc2=light?"rgba(0,0,0,.45)":"rgba(255,255,255,.45)",tc3=light?"rgba(0,0,0,.28)":"rgba(255,255,255,.28)",div=light?"rgba(0,0,0,.08)":"rgba(255,255,255,.07)",acc=light?"#c97820":"#e8a030";
+  return (
+    <div style={{width:"100%",height:"100%",display:"flex",flexDirection:"column",padding:"18px 16px",gap:16,overflowY:"auto",overflowX:"hidden",scrollbarWidth:"none"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <HydraLogo size={36} showText={true} light={light}/>
+        <div style={{display:"flex",gap:5}}>
+          <IconBtn label={soundOn?"Silenciar":"Ativar som"} onClick={onSoundToggle} light={light} active={!soundOn} danger={!soundOn}>
+            {soundOn
+              ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={tc} strokeWidth="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+              : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+            }
+          </IconBtn>
+          <IconBtn label={light?"Modo escuro":"Modo claro"} onClick={onThemeToggle} light={light}>
+            {light
+              ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={tc} strokeWidth="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+              : <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={tc} strokeWidth="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+            }
+          </IconBtn>
+          {onClose&&<IconBtn label="Fechar" onClick={onClose} light={light}><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={tc} strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></IconBtn>}
+        </div>
+      </div>
+      <SearchDropdown value={bairro} onChange={onChange} light={light}/>
+      <div className="fade-in" key={data.name+"t"}>
+        <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",marginBottom:4}}>
+          <div>
+            <div style={{fontSize:54,fontWeight:200,color:light?"#1a1a1a":"#fff",lineHeight:1,letterSpacing:"-2px",animation:"numberPop .4s ease"}}>{data.temp}°</div>
+            <div style={{fontSize:11,color:tc2,marginTop:4}}>Sensação {data.feelsLike}°C</div>
+            <div style={{fontSize:11,color:tc3,marginTop:2}}>{data.wind}</div>
+          </div>
+          <div style={{position:"relative",display:"flex",alignItems:"center",justifyContent:"center",marginTop:4}}>
+            <ScoreRing score={sc} light={light}/>
+            <div style={{position:"absolute",textAlign:"center"}}><div style={{fontSize:13,fontWeight:600,color:sColor}}>{sc}</div></div>
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:6,marginTop:4}}>
+          <div style={{width:7,height:7,borderRadius:"50%",background:sColor,animation:sc>=75?"pulse .9s ease infinite":"none"}}/>
+          <span style={{fontSize:10,color:tc2,letterSpacing:".07em",textTransform:"uppercase"}}>Hydra Score — {scoreLabel(sc)}</span>
+        </div>
+      </div>
+      <div style={{height:1,background:div}}/>
+      <div style={{display:"flex",gap:12,alignItems:"flex-start"}}>
+        <WindCompass deg={data.windDeg} light={light}/>
+        <div>
+          <div style={{fontSize:9,color:tc3,letterSpacing:".09em",textTransform:"uppercase",marginBottom:6}}>Risco</div>
+          <div style={{display:"flex",gap:10}}>
+            <div>
+              <div style={{display:"flex",gap:3,marginBottom:4}}>{["#22c55e","#84cc16","#eab308"].map((c,i)=><div key={i} style={{width:10,height:10,borderRadius:"50%",background:c}}/>)}</div>
+              <div style={{fontSize:9,color:tc3,lineHeight:1.75}}>0–19<br/>20–39<br/>40–59</div>
+            </div>
+            <div>
+              <div style={{display:"flex",gap:3,marginBottom:4}}>{["#f97316","#ef4444"].map((c,i)=><div key={i} style={{width:10,height:10,borderRadius:"50%",background:c}}/>)}</div>
+              <div style={{fontSize:9,color:tc3,lineHeight:1.75}}>60–74<br/>75–100</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style={{height:1,background:div}}/>
+      <div className="fade-in" key={data.name+"s"}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+          <div style={{fontSize:22,fontWeight:300,color:acc,letterSpacing:"-.5px"}}>{data.temp}°C</div>
+          <div style={{fontSize:10,color:tc3,textAlign:"right"}}>
+            <div>chuva 6h</div>
+            <div style={{color:tc2,fontSize:12,marginTop:1}}>{data.rain6h.reduce((a,b)=>a+b,0).toFixed(1)}mm</div>
+          </div>
+        </div>
+        <Sparkline data={data.tempChart} color={acc} width={186} height={48}/>
+        <div style={{display:"flex",justifyContent:"space-between",marginTop:4}}>
+          {["Agora","1h","2h","3h","4h","5h"].map((h,i)=><span key={i} style={{fontSize:9,color:tc3}}>{h}</span>)}
+        </div>
+      </div>
+      <div style={{flex:1}}/>
+      <div style={{fontSize:8,color:tc3,letterSpacing:".14em",textTransform:"uppercase",textAlign:"center",paddingTop:4}}>HYDRAREC · DEFESA CIVIL PE</div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════  APP */
+function App() {
+  const [ready,setReady]            = useState(false);
+  const [bairro,setBairro]          = useState("Jordão");
+  const [loading,setLoading]        = useState(false);
+  const [data,setData]              = useState(null);
+  const [waveWidth,setWaveWidth]    = useState(700);
+  const [light,setLight]            = useState(()=>localStorage.getItem("hr_theme")==="light");
+  const [soundOn,setSoundOn]        = useState(()=>localStorage.getItem("hr_sound")!=="off");
+  const [sidebarOpen,setSidebarOpen]= useState(false);
+  const [isMobile,setIsMobile]      = useState(()=>window.innerWidth<=768);
+  const [prevScore,setPrevScore]    = useState(null);
+  const waveRef = useRef(null);
+
+  useEffect(()=>{const h=()=>setIsMobile(window.innerWidth<=768);window.addEventListener("resize",h);return()=>window.removeEventListener("resize",h);},[]);
+
+  useEffect(()=>{
+    if(!waveRef.current)return;
+    setWaveWidth(waveRef.current.offsetWidth);
+    const ro=new ResizeObserver(()=>{if(waveRef.current)setWaveWidth(waveRef.current.offsetWidth);});
+    ro.observe(waveRef.current);return()=>ro.disconnect();
+  },[]);
+
+  /* Carrega dados do bairro via API */
+  const loadBairro = useCallback(async (name, isInitial=false) => {
+    if (!isInitial) {
+      setLoading(true);
+      setBairro(name);
+      setSidebarOpen(false);
+      soundMgr.playClick();
+    }
+    try {
+      const res = await fetch(`/api/dashboard/${encodeURIComponent(name)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const apiData = await res.json();
+
+      const uiData = mapApiToUI(name, apiData);
+      uiData.bulletin = "Gerando boletim IA...";
+      const featured = FEATURED.filter(b => b !== name).slice(0, 5);
+      uiData.others = featured.map(n => ({ n, t: "--", s: 0 }));
+      setData(uiData);
+      if (!isInitial) setLoading(false);
+
+      /* Boletim IA e scores vizinhos em paralelo */
+      const [narrativeRes, scoresRes] = await Promise.allSettled([
+        apiFetchNarrative(name, apiData.risk),
+        apiFetchScores(featured),
+      ]);
+
+      const bulletin = narrativeRes.status === 'fulfilled'
+        ? narrativeRes.value
+        : "IA indisponível no momento.";
+
+      const others = scoresRes.status === 'fulfilled'
+        ? scoresRes.value
+        : featured.map(n => ({ n, t: 0, s: 0 }));
+
+      setData(prev => prev ? { ...prev, bulletin, others } : prev);
+    } catch(e) {
+      console.error('loadBairro error:', e);
+      if (!isInitial) setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadBairro("Jordão", true); }, []);
+
+  const condition = data?.condition || "Ensolarado";
+  const theme = CONDITION_THEME[condition] || CONDITION_THEME["Ensolarado"];
+  const bg    = light ? theme.lightBg : theme.darkBg;
+
+  useEffect(()=>{
+    if(!ready||!data)return;
+    soundMgr.setEnabled(soundOn);
+    if(soundOn&&theme.rain!=="none") soundMgr.startRain(theme.rain);
+    else soundMgr.stopRain();
+    return()=>soundMgr.stopRain();
+  },[condition, soundOn, ready]);
+
+  useEffect(()=>{
+    if(!ready||!data)return;
+    if(soundOn&&theme.hasThunder) soundMgr.startThunderSchedule();
+    else soundMgr.stopThunderSchedule();
+    return()=>soundMgr.stopThunderSchedule();
+  },[condition, soundOn, ready]);
+
+  useEffect(()=>{
+    if(!ready||!data)return;
+    if(prevScore!==null&&data.hydraScore>=60&&data.hydraScore>(prevScore||0)) soundMgr.playAlert(data.hydraScore);
+    setPrevScore(data.hydraScore);
+  },[data?.hydraScore, ready]);
+
+  useEffect(()=>localStorage.setItem("hr_theme",light?"light":"dark"),[light]);
+  useEffect(()=>localStorage.setItem("hr_sound",soundOn?"on":"off"),[soundOn]);
+  useEffect(()=>{const h=e=>{if(e.key==="Escape")setSidebarOpen(false);};window.addEventListener("keydown",h);return()=>window.removeEventListener("keydown",h);},[]);
+
+  const handleChange = useCallback(name => { loadBairro(name); }, [loadBairro]);
+  const handleThemeToggle = () => { soundMgr.playClick(); setLight(v=>!v); };
+  const handleSoundToggle = () => {
+    soundMgr.playClick();
+    setSoundOn(v=>{
+      const next=!v; soundMgr.setEnabled(next);
+      if(next&&theme.rain!=="none") soundMgr.startRain(theme.rain);
+      if(next&&theme.hasThunder) soundMgr.startThunderSchedule();
+      return next;
+    });
+  };
+
+  const days=["Dom","Seg","Ter","Qua","Qui","Sex","Sáb"];
+  const today=new Date();
+
+  if(!ready) return <LoadingScreen onDone={()=>setReady(true)}/>;
+
+  if(!data) return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#0d0e11",flexDirection:"column",gap:16}}>
+      <div style={{animation:"glowPulse 2s ease-in-out infinite"}}><HydraLogo size={44} showText={false}/></div>
+      <div style={{fontFamily:"Outfit",fontSize:11,color:"rgba(255,255,255,.3)",letterSpacing:".18em",textTransform:"uppercase"}}>Conectando ao servidor...</div>
+    </div>
+  );
+
+  const forecastDays=data.forecast.map((f,i)=>{const d=new Date(today);d.setDate(d.getDate()+i+1);return{...f,day:days[d.getDay()]};});
+  const tc=light?"rgba(0,0,0,.82)":"#fff",tc2=light?"rgba(0,0,0,.45)":"rgba(255,255,255,.45)",tc3=light?"rgba(0,0,0,.28)":"rgba(255,255,255,.28)",div=light?"rgba(0,0,0,.08)":"rgba(255,255,255,.07)",sidebarBg=light?"rgba(238,232,222,.92)":"rgba(8,9,13,.87)",bottomBg=light?"rgba(218,212,200,.72)":"rgba(0,0,0,.3)";
+
+  return (
+    <div className={light?"light":""} style={{width:"100vw",height:"100vh",display:"flex",overflow:"hidden",fontFamily:"Outfit,sans-serif",background:bg,transition:"background 1.2s ease",animation:"fadeIn .6s ease"}}>
+
+      {/* Atmospheric */}
+      <div aria-hidden="true" style={{position:"absolute",inset:0,zIndex:0,pointerEvents:"none",background:`radial-gradient(ellipse 80% 60% at 70% 40%,rgba(${light?"140,145,155":"70,72,82"},${theme.cloud*.45}) 0%,transparent 70%)`,transition:"opacity 1s ease"}}/>
+      <div aria-hidden="true" style={{position:"absolute",inset:0,zIndex:0,pointerEvents:"none",background:`radial-gradient(ellipse 55% 38% at 88% 18%,rgba(${light?"130,135,145":"90,90,100"},${theme.cloud*.3}) 0%,transparent 60%)`,animation:"cloudDrift 14s ease-in-out infinite"}}/>
+      {theme.hasThunder&&<Lightning onFlash={()=>{ if(soundOn&&soundMgr.ctx) soundMgr.playThunder(); }}/>}
+      <Rain intensity={theme.rain}/>
+
+      {isMobile&&sidebarOpen&&<div className="mob-overlay" aria-hidden="true" onClick={()=>setSidebarOpen(false)}/>}
+
+      {/* Sidebar */}
+      <nav aria-label="Painel lateral" className={`sidebar-panel${isMobile&&sidebarOpen?" open":""}`}
+        style={{width:isMobile?290:226,height:"100%",zIndex:isMobile?60:10,background:sidebarBg,backdropFilter:"blur(28px)",borderRight:`1px solid ${div}`}}>
+        <Sidebar data={data} bairro={bairro} onChange={handleChange} light={light} soundOn={soundOn}
+          onSoundToggle={handleSoundToggle} onThemeToggle={handleThemeToggle}
+          onClose={isMobile?()=>setSidebarOpen(false):undefined}/>
+      </nav>
+
+      {/* Main */}
+      <main id="main-content" tabIndex={-1} style={{flex:1,height:"100%",position:"relative",zIndex:5,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+
+        {/* Top bar */}
+        <div style={{padding:isMobile?"14px 16px 0":"18px 28px 0",display:"flex",justifyContent:"space-between",alignItems:"flex-start",flexShrink:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            {isMobile&&<button onClick={()=>{setSidebarOpen(true);soundMgr.playClick();}} aria-label="Abrir menu" style={{background:"none",border:"none",cursor:"pointer",padding:4,lineHeight:0}}>
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={tc} strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+            </button>}
+            <div style={{fontSize:10,color:tc3,letterSpacing:".15em",textTransform:"uppercase"}}>Previsão do Tempo</div>
+            {loading&&<div aria-label="Carregando" style={{width:6,height:6,borderRadius:"50%",background:light?"#c97820":"#e8a030",animation:"pulse 1s ease infinite"}}/>}
+          </div>
+          <LiveClock light={light} compact={isMobile}/>
+        </div>
+
+        {/* Content row: weather + AI panel */}
+        <div className="fade-in" key={data.name+"m"} style={{padding:isMobile?"14px 16px 0":"16px 28px 0",flex:1,display:"flex",flexDirection:"row",minHeight:0,gap:0,overflow:"hidden"}}>
+
+          {/* Left: weather content */}
+          <div style={{flex:1,display:"flex",flexDirection:"column",minWidth:0,paddingRight:isMobile?0:28,overflow:"hidden"}}>
+            <h1 style={{fontSize:isMobile?30:48,fontWeight:300,color:tc,lineHeight:1.05,letterSpacing:"-1.5px",maxWidth:500,marginBottom:12,textShadow:light?"none":"0 2px 50px rgba(0,0,0,.6)",textWrap:"pretty",animation:"slideInLeft .5s ease"}}>
+              {data.condition}
+            </h1>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke={tc2} strokeWidth="1.5" aria-hidden="true"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9z"/></svg>
+              <div style={{fontSize:11,color:tc2,letterSpacing:".03em"}}>Recife, PE · {today.toLocaleDateString("pt-BR",{weekday:"long",day:"numeric",month:"long"})}</div>
+            </div>
+            <div style={{marginBottom:14,flexShrink:0}}>
+              <div style={{fontSize:isMobile?50:66,fontWeight:200,color:tc,letterSpacing:"-3px",lineHeight:1,animation:"numberPop .5s ease"}}>
+                {data.temp}°
+              </div>
+              <div style={{fontSize:11,color:tc3,marginTop:4}}>Sensação {data.feelsLike}°C · {data.humidity}% umidade</div>
+            </div>
+            <div className="scroll-x" style={{display:"flex",gap:8,marginBottom:14,paddingBottom:2,flexShrink:0}}>
+              <Chip label="UV" value={`${data.uv} · ${uvLabel(data.uv)}`} color={uvColor(data.uv)} light={light}/>
+              <Chip label="Pressão" value={`${data.pressure} hPa`} light={light}/>
+              <Chip label="Visibilidade" value={`${data.visibility} km`} light={light}/>
+              <Chip label="Maré" value={`${data.tide}m`} light={light}/>
+              <Chip label="Solo" value={`${data.soil}%`} color={data.soil>80?scoreColor(90):data.soil>60?scoreColor(55):undefined} light={light}/>
+            </div>
+            {/* Forecast */}
+            <div ref={waveRef} style={{position:"relative",marginTop:"auto",flexShrink:0}}>
+              <div className="scroll-x" style={{display:"flex",borderTop:`1px solid ${div}`,paddingTop:12}}>
+                {forecastDays.map((f,i)=>(
+                  <div key={i} style={{flex:"0 0 calc(100%/6)",textAlign:"center",minWidth:68}}>
+                    <div style={{fontSize:9,color:tc3,letterSpacing:".07em",textTransform:"uppercase",marginBottom:4}}>{f.day}</div>
+                    <div style={{fontSize:11,color:tc2,marginBottom:1}}>↑{f.high}°</div>
+                    <div style={{fontSize:10,color:tc3,marginBottom:5}}>↓{f.low}°</div>
+                    <div style={{height:2,background:light?"rgba(0,0,0,.08)":"rgba(255,255,255,.08)",borderRadius:1,overflow:"hidden",margin:"0 auto",width:"60%"}}>
+                      <div style={{height:"100%",width:`${f.rain}%`,background:`rgba(${light?"80,130,200":"140,180,255"},.6)`,borderRadius:1,transition:"width .8s ease"}}/>
+                    </div>
+                    <div style={{fontSize:8,color:tc3,marginTop:3}}>{f.rain}%</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{position:"relative",height:54,marginTop:4}}>
+                <ForecastWave forecast={forecastDays} width={waveWidth} height={54} light={light}/>
+              </div>
+            </div>
+          </div>
+
+          {/* Right: AI bulletin panel — desktop only */}
+          {!isMobile && (
+            <div style={{width:264,flexShrink:0,borderLeft:`1px solid ${div}`,paddingLeft:24,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+              <AIBulletinPanel data={data} light={light}/>
+            </div>
+          )}
+        </div>
+
+        {/* Bottom bar */}
+        <nav aria-label="Outros bairros" className="scroll-x" style={{display:"flex",borderTop:`1px solid ${div}`,background:bottomBg,backdropFilter:"blur(14px)",flexShrink:0}}>
+          {data.others.map((o,i)=>{
+            const oc=scoreColor(typeof o.s==='number'?o.s:0);
+            return (
+              <button key={i} onClick={()=>handleChange(o.n)} aria-label={`${o.n}: ${o.t}°C, score ${o.s}`}
+                style={{flex:"0 0 20%",minWidth:90,padding:"11px 12px",borderRight:`1px solid ${div}`,borderTop:"none",borderBottom:"none",borderLeft:"none",background:"transparent",cursor:"pointer",textAlign:"left",transition:"background .18s",fontFamily:"Outfit"}}
+                onMouseEnter={e=>e.currentTarget.style.background=light?"rgba(0,0,0,.04)":"rgba(255,255,255,.04)"}
+                onMouseLeave={e=>e.currentTarget.style.background="transparent"}>
+                <div style={{fontSize:20,fontWeight:200,color:tc,letterSpacing:"-.5px",marginBottom:1}}>{o.t}{typeof o.t==='number'?"°":""}</div>
+                <div style={{fontSize:9,color:tc2,marginBottom:6,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{o.n}</div>
+                <div style={{height:2,background:light?"rgba(0,0,0,.1)":"rgba(255,255,255,.08)",borderRadius:2,overflow:"hidden"}}>
+                  <div style={{height:"100%",width:`${typeof o.s==='number'?o.s:0}%`,background:oc,borderRadius:2,transition:"width .8s ease"}}/>
+                </div>
+                <div style={{fontSize:8,color:tc3,marginTop:2}}>{typeof o.s==='number'?`Score ${o.s}`:"..."}</div>
+              </button>
+            );
+          })}
+        </nav>
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+<script>
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{
+    navigator.serviceWorker.register('/sw.js').catch(()=>{});
+  });
+}
+</script>
+</body>
+</html>

@@ -2,5 +2,6 @@ fastapi
 uvicorn
 httpx
 beautifulsoup4
-google-generativeai
+google-genai
 python-dotenv
+aiofiles

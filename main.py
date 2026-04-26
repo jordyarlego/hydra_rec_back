@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import httpx
 from bs4 import BeautifulSoup
@@ -8,17 +9,18 @@ import asyncio
 import time
 import os
 from dotenv import load_dotenv
-import google.generativeai as genai
+from google import genai as google_genai
 
 load_dotenv()
 
 app = FastAPI(title="HydraRec Backend API")
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+_gemini_client = google_genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:8000").split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -104,6 +106,7 @@ BAIRRO_COORDS: dict[str, tuple[float, float]] = {
     "Ponto de Parada":            (-8.0308, -34.9044),
     "Porto da Madeira":           (-8.0869, -34.9253),
     "Prado":                      (-8.0908, -34.9200),
+    "Recife Antigo":              (-8.0636, -34.8733),
     "Recife (Bairro do Recife)":  (-8.0636, -34.8733),
     "Rosarinho":                  (-8.0414, -34.9039),
     "San Martin":                 (-8.0725, -34.9208),
@@ -210,13 +213,13 @@ async def fetch_weather_data(lat: float, lon: float) -> dict:
 
     base = (
         f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
-        f"&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,"
-        f"wind_speed_10m,wind_gusts_10m,surface_pressure,uv_index,is_day"
-        f"&past_hours=24&forecast_hours=24&timezone=auto"
+        f"&current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,"
+        f"wind_speed_10m,wind_direction_10m,wind_gusts_10m,surface_pressure,uv_index,is_day"
+        f"&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max"
+        f"&past_hours=24&forecast_days=7&timezone=auto"
     )
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        # Tenta incluir umidade do solo; se API retornar erro, refaz sem ela
         url_soil = base + "&hourly=precipitation,soil_moisture_0_to_7cm,temperature_2m,weather_code"
         resp = await client.get(url_soil)
         data = resp.json()
@@ -349,6 +352,57 @@ def build_forecast_6h(weather: dict) -> list:
     return result
 
 # ---------------------------------------------------------------------------
+# Previsão diária (próximos 6 dias, pulando hoje)
+# ---------------------------------------------------------------------------
+def build_daily_forecast(weather: dict) -> list:
+    daily = weather.get("daily", {})
+    dates = daily.get("time", [])
+    highs = daily.get("temperature_2m_max", [])
+    lows  = daily.get("temperature_2m_min", [])
+    rains = daily.get("precipitation_probability_max", [])
+    result = []
+    for i in range(1, min(7, len(dates))):
+        result.append({
+            "date": dates[i] if i < len(dates) else "",
+            "high": round(highs[i]) if i < len(highs) and highs[i] is not None else None,
+            "low":  round(lows[i])  if i < len(lows)  and lows[i]  is not None else None,
+            "rain": int(rains[i])   if i < len(rains)  and rains[i] is not None else 0,
+        })
+    return result
+
+# ---------------------------------------------------------------------------
+# Resumo rápido por bairro (temperatura + Hydra Score) — para painel inferior
+# ---------------------------------------------------------------------------
+async def _bairro_summary(bairro: str) -> dict:
+    try:
+        geo = await geocode_city(bairro)
+        lat, lon = geo["latitude"], geo["longitude"]
+        weather_data, tide = await asyncio.gather(
+            fetch_weather_data(lat, lon),
+            scrape_tide_data(),
+        )
+        risk = calculate_risk_score(weather_data, 10.0, tide, bairro)
+        current = weather_data.get("current", {})
+        return {
+            "name":  bairro,
+            "temp":  round(current.get("temperature_2m", 0)),
+            "score": risk["score"],
+        }
+    except Exception as e:
+        print(f"Summary error for {bairro}: {e}")
+        return {"name": bairro, "temp": 0, "score": 0}
+
+
+class BatchScoreRequest(BaseModel):
+    bairros: list[str]
+
+
+@app.post("/api/scores")
+async def get_scores(req: BatchScoreRequest):
+    results = await asyncio.gather(*[_bairro_summary(b) for b in req.bairros[:6]])
+    return {"scores": list(results)}
+
+# ---------------------------------------------------------------------------
 # Narrativa IA (Gemini) — movida para cá, chave nunca vai ao cliente
 # ---------------------------------------------------------------------------
 class NarrativeRequest(BaseModel):
@@ -357,31 +411,37 @@ class NarrativeRequest(BaseModel):
 
 @app.post("/api/narrative")
 async def get_narrative(request: NarrativeRequest):
-    if not GEMINI_API_KEY:
+    if not _gemini_client:
         return {"narrative": "Módulo IA Offline. Configure GEMINI_API_KEY no arquivo .env do servidor."}
 
     risk = request.riskData
     raw  = risk.get("rawValues", {})
     solo_pct = round((raw.get("saturacaoSolo") or 0) * 100)
 
-    prompt = f"""Você é o sistema HydraRec da Defesa Civil do Recife. Gere um boletim CURTO e DIRETO sobre o bairro {request.cityName} (Risco {risk.get("nivel")}, Score {risk.get("score")}/100).
+    prompt = f"""Você é um assistente da Defesa Civil do Recife. Fale com o morador do bairro {request.cityName} de forma simples e direta, como se fosse uma mensagem de WhatsApp.
 
-Dados: chuva prevista {raw.get("chuvaPrevista")}mm | acumulado 24h {raw.get("chuva24h")}mm | maré {raw.get("mareAltura")}m ({raw.get("mareTrend")}) | solo {solo_pct}% saturado | altitude {raw.get("altitude")}m.
+Situação: risco {risk.get("nivel")} (score {risk.get("score")}/100). Chuva prevista {raw.get("chuvaPrevista")}mm, acumulada {raw.get("chuva24h")}mm em 24h, maré {raw.get("mareAltura")}m, solo {solo_pct}% saturado.
 
-Responda em exatamente 3 linhas curtas:
-1. 🌧️ Uma frase sobre o risco atual (alagamento/deslizamento sim ou não, e por quê).
-2. 📍 Uma frase sobre ponto crítico histórico do bairro ou arredores.
-3. ✅ Uma frase de orientação prática ao cidadão.
+Escreva exatamente 3 frases curtas:
+1. Diga claramente se tem ou não risco de alagamento/deslizamento HOJE, e por quê (em palavras simples).
+2. Mencione algum ponto ou rua do bairro que costuma alagar ou ter problema, se souber.
+3. Dê um conselho prático para o morador agir agora.
 
-Sem títulos, sem listas, sem markdown. Máximo 60 palavras no total."""
+Use linguagem do dia a dia, sem termos técnicos. Máximo 55 palavras no total. Sem emojis, sem títulos."""
 
     try:
-        model = genai.GenerativeModel("gemini-flash-latest")
-        response = await asyncio.to_thread(model.generate_content, prompt)
+        response = await asyncio.to_thread(
+            lambda: _gemini_client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+            )
+        )
         return {"narrative": response.text}
     except Exception as e:
-        print("Gemini Error:", e)
-        raise HTTPException(status_code=500, detail="Erro ao gerar narrativa IA.")
+        import traceback; traceback.print_exc()
+        nivel = risk.get("nivel", "?")
+        score = risk.get("score", 0)
+        return {"narrative": f"IA temporariamente indisponível. Risco {nivel} detectado (score {score}/100)."}
 
 # ---------------------------------------------------------------------------
 # Endpoint principal
@@ -403,10 +463,39 @@ async def get_dashboard_data(bairro: str):
         forecast_6h = build_forecast_6h(weather)
 
         return {
-            "location":    geo,
-            "weather":     weather,
-            "risk":        risk,
-            "forecast6h":  forecast_6h,
+            "location":      geo,
+            "weather":       weather,
+            "risk":          risk,
+            "forecast6h":    forecast_6h,
+            "forecastDaily": build_daily_forecast(weather),
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Frontend — serve o dashboard HTML estático
+# ---------------------------------------------------------------------------
+@app.get("/")
+async def serve_dashboard():
+    path = os.path.join(BASE_DIR, "static", "index.html")
+    if not os.path.exists(path):
+        return {"message": "HydraRec API online — arquivo index.html não encontrado em static/"}
+    return FileResponse(path)
+
+
+# PWA assets
+@app.get("/manifest.json")
+async def serve_manifest():
+    return FileResponse(os.path.join(BASE_DIR, "static", "manifest.json"),
+                        media_type="application/manifest+json")
+
+@app.get("/sw.js")
+async def serve_sw():
+    return FileResponse(os.path.join(BASE_DIR, "static", "sw.js"),
+                        media_type="application/javascript")
+
+@app.get("/icon.svg")
+async def serve_icon():
+    return FileResponse(os.path.join(BASE_DIR, "static", "icon.svg"),
+                        media_type="image/svg+xml")
