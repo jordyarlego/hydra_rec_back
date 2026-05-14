@@ -35,26 +35,39 @@ def calculate_risk_score_v2(
         from data.vulnerability import FLOOD_VULNERABILITY, DEFAULT_VULNERABILITY
         vulnerability = FLOOD_VULNERABILITY.get(bairro, DEFAULT_VULNERABILITY)
 
-    components: dict[str, float] = {}
-    components["rain_next"]      = calc_rain_points(next_24h, max_pts=50.0)
-    components["rain_past"]      = calc_rain_points(past_24h, max_pts=25.0)
-    components["tide"]           = min(tide["height"] / 3.0, 1.0) * 15.0
-    components["vulnerability"]  = vulnerability * 15.0
+    # Chuva é o gatilho principal — sem ela, risco estrutural não se materializa
+    has_rain = (next_24h >= 1.0 or past_24h >= 1.0)
 
-    if elevation < 5:
-        components["altitude"] = 8.0
-    elif elevation < 15:
-        components["altitude"] = 4.0
+    components: dict[str, float] = {}
+    components["rain_next"] = calc_rain_points(next_24h, max_pts=50.0)
+    components["rain_past"] = calc_rain_points(past_24h, max_pts=25.0)
+
+    # Maré: risco autônomo reduzido sem chuva (storm surge precisa de chuva intensa)
+    tide_pts = min(tide["height"] / 3.0, 1.0) * 15.0
+    components["tide"] = tide_pts if has_rain else tide_pts * 0.25
+
+    # Vulnerabilidade e altitude amplificam risco pluvial — sem chuva, não contribuem
+    components["vulnerability"] = (vulnerability * 15.0) if has_rain else 0.0
+
+    if has_rain:
+        if elevation < 5:
+            components["altitude"] = 8.0
+        elif elevation < 15:
+            components["altitude"] = 4.0
+        else:
+            components["altitude"] = 0.0
     else:
         components["altitude"] = 0.0
 
-    if humidity >= 85 and pressure < 1008:
+    # Instabilidade atmosférica: precursor, mas só pesa quando há chuva prevista
+    if has_rain and humidity >= 85 and pressure < 1008:
         components["atmospheric"] = 7.0
-    elif humidity >= 80 and pressure < 1012:
+    elif has_rain and humidity >= 80 and pressure < 1012:
         components["atmospheric"] = 3.0
     else:
         components["atmospheric"] = 0.0
 
+    # Reports da comunidade: sempre contam (inundação pode ocorrer por drenagem/pipe)
     if reports_nearby_count >= 3:
         components["community"] = 10.0
     elif reports_nearby_count >= 1:
