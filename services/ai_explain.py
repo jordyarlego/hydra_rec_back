@@ -109,12 +109,21 @@ async def explain_score(bairro: str, risk: dict) -> str:
             base_url="https://integrate.api.nvidia.com/v1",
             api_key=key,
         )
-        resp = await client.chat.completions.create(
-            model="meta/llama-3.1-8b-instruct",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=500,
-        )
+        # Nemotron Super 49B: melhor qualidade para contexto climático em PT-BR
+        # Fallback: Llama 3.3 70B (igualmente disponível na NVIDIA NIM)
+        for model in ("nvidia/llama-3.3-nemotron-super-49b-v1", "meta/llama-3.3-70b-instruct"):
+            try:
+                resp = await client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.3,
+                    max_tokens=500,
+                )
+                break
+            except Exception:
+                continue
+        else:
+            raise RuntimeError("Todos os modelos NVIDIA NIM falharam")
         text = (resp.choices[0].message.content or "").strip()
         if not text:
             text = _fallback(bairro, risk, raw)
