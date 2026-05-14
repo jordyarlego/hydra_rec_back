@@ -7,6 +7,7 @@ from services.weather.fusion import fetch_weather_consensus
 from services.risk_score import calculate_risk_score_v2
 from services.heat_index import heat_index_steadman, heat_risk_label
 from services.traffic import traffic_forecast_multiplier
+from services.ai_explain import explain_score
 from models.schemas import BatchScoreRequest
 
 router = APIRouter()
@@ -126,5 +127,22 @@ async def get_dashboard_data(bairro: str):
             "forecast6h":    build_forecast_6h(weather),
             "forecastDaily": build_daily_forecast(weather),
         }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/api/explain/{bairro}")
+async def get_score_explanation(bairro: str):
+    try:
+        geo = await geocode_city(bairro)
+        lat, lon = geo["latitude"], geo["longitude"]
+        consensus, elevation, tide = await asyncio.gather(
+            fetch_weather_consensus(lat, lon, bairro),
+            fetch_elevation(lat, lon),
+            scrape_tide_data(),
+        )
+        risk = calculate_risk_score_v2(consensus, elevation, tide, bairro)
+        explanation = await explain_score(bairro, risk)
+        return {"explanation": explanation, "score": risk["score"], "nivel": risk["nivel"]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
