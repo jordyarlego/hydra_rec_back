@@ -1,7 +1,9 @@
 import os
 import time
 import logging
-from openai import AsyncOpenAI
+
+# Import lazy de openai: economiza ~30-50MB de RAM no boot (Render free 512MB).
+# AsyncOpenAI é instanciado por request, então importar dentro da função é OK.
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +107,7 @@ async def explain_score(bairro: str, risk: dict) -> str:
     )
 
     try:
+        from openai import AsyncOpenAI
         client = AsyncOpenAI(
             base_url="https://integrate.api.nvidia.com/v1",
             api_key=key,

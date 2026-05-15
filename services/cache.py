@@ -1,12 +1,18 @@
 import time
+from collections import OrderedDict
 
-_cache: dict = {}
+# Cache bounded para não estourar memória no Render free (512MB).
+# OrderedDict mantém ordem de inserção; ao bater MAX_ENTRIES removemos o mais antigo.
+_MAX_ENTRIES = 64
+_cache: "OrderedDict[str, dict]" = OrderedDict()
 
 
 def cache_get(key: str, ttl: int):
     """Retorna dados se dentro do TTL, None caso contrário."""
     entry = _cache.get(key)
     if entry and (time.time() - entry["ts"]) < ttl:
+        # Move para o final (LRU recente)
+        _cache.move_to_end(key)
         return entry["data"]
     return None
 
@@ -26,6 +32,9 @@ def cache_get_stale(key: str):
 
 def cache_set(key: str, data) -> None:
     _cache[key] = {"data": data, "ts": time.time()}
+    _cache.move_to_end(key)
+    while len(_cache) > _MAX_ENTRIES:
+        _cache.popitem(last=False)  # remove o mais antigo (FIFO)
 
 
 def cache_clear(key: str) -> None:

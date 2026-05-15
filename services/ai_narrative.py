@@ -1,7 +1,8 @@
 import os
 import asyncio
 import logging
-from openai import AsyncOpenAI
+
+# Import lazy de openai (NVIDIA NIM client): economiza ~30-50MB no boot do Render.
 
 logger = logging.getLogger(__name__)
 
@@ -323,6 +324,7 @@ async def generate_narrative(
     nvidia_key = os.getenv("NVIDIA_API_KEY", "")
     if nvidia_key:
         try:
+            from openai import AsyncOpenAI
             client = AsyncOpenAI(
                 base_url="https://integrate.api.nvidia.com/v1",
                 api_key=nvidia_key,
