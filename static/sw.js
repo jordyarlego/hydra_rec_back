@@ -1,6 +1,7 @@
-const CACHE = 'hydrarec-runtime-v2'
+const CACHE = 'hydrarec-runtime-v3'
 
 self.addEventListener('install', e => {
+  // Limpa caches antigos no install
   e.waitUntil(
     caches.keys().then(keys => Promise.all(keys.map(k => caches.delete(k))))
   )
@@ -16,7 +17,13 @@ self.addEventListener('activate', e => {
   self.clients.claim()
 })
 
+// Permite que o client force ativação de SW novo
+self.addEventListener('message', e => {
+  if (e.data && e.data.type === 'SKIP_WAITING') self.skipWaiting()
+})
+
 self.addEventListener('fetch', e => {
+  // Network-first: nunca serve assets stale
   e.respondWith(fetch(e.request))
 })
 
