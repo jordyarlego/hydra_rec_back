@@ -1,7 +1,7 @@
 import os
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
-from services.push_service import broadcast_alert, save_subscription, remove_subscription
+from services.push_service import broadcast_alert, save_subscription, remove_subscription, load_subscriptions
 from services.security import hash_ip
 
 router = APIRouter()
@@ -56,3 +56,17 @@ async def test_push(request: Request):
         raise HTTPException(status_code=403, detail="Push test desabilitado.")
     sent = await broadcast_alert("Teste", 70, "TESTE")
     return {"ok": True, "sent": sent}
+
+
+@router.get("/api/push/status")
+async def push_status(request: Request):
+    """Quantas subscriptions estão salvas (debug). Protegido pelo mesmo token."""
+    token = os.getenv("PUSH_TEST_TOKEN", "")
+    if not token or request.headers.get("X-Push-Test-Token") != token:
+        raise HTTPException(status_code=403, detail="Endpoint desabilitado.")
+    subs = await load_subscriptions()
+    return {
+        "subscriptions_count": len(subs),
+        "vapid_public_configured": bool(os.getenv("VAPID_PUBLIC_KEY", "").strip()),
+        "vapid_private_configured": bool(os.getenv("VAPID_PRIVATE_KEY", "").strip()),
+    }
