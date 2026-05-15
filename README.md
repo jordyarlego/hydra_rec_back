@@ -92,6 +92,26 @@ ALLOWED_ORIGINS=http://localhost:5173,http://localhost:8000
 
 ---
 
+## Hydra Score v2 — Calibração
+
+Fórmula recalibrada em 2026-05 para Recife (`services/risk_score.py`). Curva logística com plateau evita inflação para chuvas leves:
+
+| Componente | Peso máximo | Notas |
+|---|---|---|
+| `rain_next` | 35 pts | `35 * (1 - exp(-mm/22))`. 11mm→14pts, 25mm→25pts, 50mm→31pts |
+| `rain_past` | 10 pts | Curva similar, peso reduzido. Solo saturado amplifica risco pluvial |
+| `tide` | 10 pts | `(altura/3) * 10` com chuva ativa; ×0.2 sem chuva |
+| `vulnerability` | 8 pts | Histórico do bairro × 8. Só com chuva ativa |
+| `altitude` | 4 pts | < 5m → 4pts; 5–15m → 2pts; > 15m → 0 |
+| `atmospheric` | 6 pts | Umidade ≥ 88% + pressão < 1006 mbar |
+| `community` | 10 pts | 3+ reports → 10pts; 1–2 reports → 5pts |
+
+**Níveis:** SEGURO (< 25) · ATENCAO (25–44) · MODERADO (45–64) · ALTO (65–79) · SEVERO (≥ 80).
+
+**Filosofia:** chuva é gatilho. Sem chuva (rain_next < 1mm AND rain_past < 1mm), os componentes estruturais (vulnerabilidade, altitude, maré, atmosférico) zeram automaticamente — só `rain_next`/`rain_past` mínimos contam. Isso evita o caso "53/100 em dia ensolarado".
+
+---
+
 ## Endpoints
 
 ### `GET /api/dashboard/{bairro}`

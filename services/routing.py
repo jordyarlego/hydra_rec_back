@@ -219,26 +219,35 @@ async def analyze_route_risk(
 
     # Score calculation
     base_score = 0
-    _SEV_PTS = {"leve": 5, "moderado": 15, "grave": 30}
+    _SEV_PTS = {"leve": 4, "moderado": 12, "grave": 25}
+    # Cap total de pontos históricos para evitar inflação em rotas longas
+    historico_cap = 18
+    historico_total = 0
     for h in hazards:
         if h["type"] == "ponto_critico_historico":
-            # Pontos históricos sem condições ativas valem menos no score
-            base_score += 8 if h.get("risk_active", True) else 2
+            # Pontos sem chuva ativa quase não contam — clima bom = baixo risco real
+            pts = 5 if h.get("risk_active", True) else 1
+            if historico_total + pts <= historico_cap:
+                base_score += pts
+                historico_total += pts
         elif h["type"] == "chuva_ativa_apac":
             base_score += _SEV_PTS.get(h["severity"], 10)
         else:
             base_score += _SEV_PTS.get(h.get("severity", "leve"), 5)
 
-    # Rain forecast bonus
-    if weather_rain_next > 20:
-        base_score += 20
-    elif weather_rain_next > 8:
+    # Rain forecast bonus (calibrado para Recife)
+    if weather_rain_next > 30:
+        base_score += 18
+    elif weather_rain_next > 15:
         base_score += 10
-    elif weather_rain_next > 2:
-        base_score += 5
+    elif weather_rain_next > 5:
+        base_score += 4
+    elif weather_rain_next > 1:
+        base_score += 1
 
-    # APAC boletim alert level
-    base_score += _APAC_BONUS.get(apac_nivel, 5)
+    # APAC boletim alert level (reduzido SEGURO/ATENCAO para não inflar score com clima bom)
+    _APAC_BONUS_CALIBRATED = {"SEVERO": 30, "ALTO": 20, "MODERADO": 10, "ATENCAO": 2, "SEGURO": 0}
+    base_score += _APAC_BONUS_CALIBRATED.get(apac_nivel, 2)
 
     # INMET active alerts (capped)
     inmet_bonus = min(sum(a.get("score_bonus", 0) for a in (inmet_alerts or [])), 30)
