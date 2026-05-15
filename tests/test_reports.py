@@ -25,7 +25,14 @@ def test_hash_ip_no_plaintext():
 def test_report_payload_bbox():
     """Lat/lon dentro do bbox do Recife são válidas."""
     from models.schemas import CreateReportPayload
-    p = CreateReportPayload(tipo="alagamento", severidade="moderado", lat=-8.05, lon=-34.88)
+    p = CreateReportPayload(
+        tipo="alagamento",
+        severidade="moderado",
+        lat=-8.05,
+        lon=-34.88,
+        user_lat=-8.05,
+        user_lon=-34.88,
+    )
     assert p.lat == -8.05
 
 
@@ -34,7 +41,14 @@ def test_report_payload_bbox_invalid():
     from pydantic import ValidationError
     import pytest
     with pytest.raises(ValidationError):
-        CreateReportPayload(tipo="alagamento", severidade="moderado", lat=-10.0, lon=-34.88)
+        CreateReportPayload(
+            tipo="alagamento",
+            severidade="moderado",
+            lat=-10.0,
+            lon=-34.88,
+            user_lat=-8.05,
+            user_lon=-34.88,
+        )
 
 
 def test_report_tipo_invalido():
@@ -42,7 +56,14 @@ def test_report_tipo_invalido():
     from pydantic import ValidationError
     import pytest
     with pytest.raises(ValidationError):
-        CreateReportPayload(tipo="terremoto", severidade="moderado", lat=-8.05, lon=-34.88)
+        CreateReportPayload(
+            tipo="terremoto",
+            severidade="moderado",
+            lat=-8.05,
+            lon=-34.88,
+            user_lat=-8.05,
+            user_lon=-34.88,
+        )
 
 
 def test_report_descricao_max():
@@ -50,4 +71,12 @@ def test_report_descricao_max():
     from pydantic import ValidationError
     import pytest
     with pytest.raises(ValidationError):
-        CreateReportPayload(tipo="alagamento", severidade="leve", lat=-8.05, lon=-34.88, descricao="x" * 281)
+        CreateReportPayload(
+            tipo="alagamento",
+            severidade="leve",
+            lat=-8.05,
+            lon=-34.88,
+            user_lat=-8.05,
+            user_lon=-34.88,
+            descricao="x" * 281,
+        )

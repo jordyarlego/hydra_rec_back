@@ -44,10 +44,13 @@ async def fetch_weather_data(lat: float, lon: float) -> dict:
 
 
 async def fetch_elevation(lat: float, lon: float) -> float:
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        url = f"https://api.open-meteo.com/v1/elevation?latitude={lat}&longitude={lon}"
-        resp = await client.get(url)
-        data = resp.json()
-        if data.get("elevation") and len(data["elevation"]) > 0:
-            return data["elevation"][0]
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            url = f"https://api.open-meteo.com/v1/elevation?latitude={lat}&longitude={lon}"
+            resp = await client.get(url)
+            data = resp.json()
+            if data.get("elevation") and len(data["elevation"]) > 0:
+                return data["elevation"][0]
+    except Exception:
+        pass
     return 10.0

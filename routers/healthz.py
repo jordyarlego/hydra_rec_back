@@ -32,7 +32,7 @@ async def _check_supabase() -> dict:
 async def _check_gemini() -> dict:
     key = os.getenv("GEMINI_API_KEY", "")
     if not key:
-        return {"status": "error", "detail": "GEMINI_API_KEY não configurada"}
+        return {"status": "not_configured", "detail": "usa fallback local quando necessário"}
     return {"status": "ok"}
 
 
@@ -49,13 +49,15 @@ async def healthz():
         "open_meteo": open_meteo,
         "supabase": supabase,
         "gemini": gemini,
+        "nvidia": {"status": "ok" if os.getenv("NVIDIA_API_KEY") else "not_configured"},
         "openweather": {"status": "ok" if os.getenv("OPENWEATHER_KEY") else "not_configured"},
-        "openrouteservice": {"status": "ok" if os.getenv("OPENROUTESERVICE_KEY") else "not_configured"},
+        "web_push": {"status": "ok" if os.getenv("VAPID_PUBLIC_KEY") and os.getenv("VAPID_PRIVATE_KEY") else "not_configured"},
+        "routing": {"status": "ok", "provider": "OSRM público, sem chave"},
     }
 
-    all_ok = all(v.get("status") == "ok" for v in deps.values())
+    required_ok = open_meteo.get("status") == "ok" and supabase.get("status") == "ok"
     return {
-        "status": "healthy" if all_ok else "degraded",
+        "status": "healthy" if required_ok else "degraded",
         "dependencies": deps,
         "timestamp": time.time(),
     }

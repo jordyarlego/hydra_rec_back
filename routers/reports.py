@@ -9,6 +9,7 @@ from services.alerts_engine import check_and_create_alerts
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+MAX_REPORT_DISTANCE_M = 1500
 
 
 def _haversine(lat1, lon1, lat2, lon2):
@@ -20,6 +21,13 @@ def _haversine(lat1, lon1, lat2, lon2):
 
 @router.post("/api/reports", status_code=201)
 async def create_report(payload: CreateReportPayload, request: Request):
+    distance_m = _haversine(payload.user_lat, payload.user_lon, payload.lat, payload.lon)
+    if distance_m > MAX_REPORT_DISTANCE_M:
+        raise HTTPException(
+            status_code=400,
+            detail=f"O report precisa estar a até {MAX_REPORT_DISTANCE_M // 1000 if MAX_REPORT_DISTANCE_M % 1000 == 0 else MAX_REPORT_DISTANCE_M / 1000:.1f}km da sua localização atual.",
+        )
+
     ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown").split(",")[0].strip()
     ip_hash = hash_ip(ip)
 

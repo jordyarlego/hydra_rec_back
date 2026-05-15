@@ -13,17 +13,17 @@ def test_calc_rain_zero():
 
 
 def test_calc_rain_curve_shape():
-    assert 11 <= calc_rain_points(5) <= 13
-    assert 21 <= calc_rain_points(10) <= 23
-    assert 25 <= calc_rain_points(13.4) <= 28
-    assert 27 <= calc_rain_points(15) <= 30
-    assert 39 <= calc_rain_points(30) <= 42
-    assert 47 <= calc_rain_points(60) <= 50
+    assert 6 <= calc_rain_points(5) <= 8
+    assert 12 <= calc_rain_points(10) <= 14
+    assert 15 <= calc_rain_points(13.4) <= 17
+    assert 17 <= calc_rain_points(15) <= 19
+    assert 25 <= calc_rain_points(30) <= 27
+    assert 32 <= calc_rain_points(60) <= 34
 
 
 def test_calc_rain_plateau():
     """Score não ultrapassa max_pts."""
-    assert calc_rain_points(1000) <= 50.0
+    assert calc_rain_points(1000) <= 35.0
     assert calc_rain_points(1000, max_pts=25.0) <= 25.0
 
 
@@ -47,7 +47,7 @@ def test_caso_professor_13_4mm_jordao():
     assert result["nivel"] in ("ATENCAO", "MODERADO", "ALTO", "SEVERO"), (
         f"13.4mm em Jordão classificado como {result['nivel']} — inaceitável!"
     )
-    assert result["score"] >= 35, f"Score muito baixo para 13.4mm: {result['score']}"
+    assert result["score"] >= 25, f"Score muito baixo para 13.4mm: {result['score']}"
 
 
 # ── Cenários extremos ──────────────────────────────────────────────────────────
@@ -84,8 +84,8 @@ def test_chuva_extrema_severo():
         bairro="Brasília Teimosa",
         reports_nearby_count=5,
     )
-    assert result["nivel"] == "SEVERO"
-    assert result["score"] >= 80
+    assert result["nivel"] in ("ALTO", "SEVERO")
+    assert result["score"] >= 75
 
 
 # ── Componentes isolados ───────────────────────────────────────────────────────

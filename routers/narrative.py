@@ -7,11 +7,11 @@ router = APIRouter()
 
 @router.post("/api/narrative")
 async def get_narrative(request: NarrativeRequest):
-    narrative = await generate_narrative(
+    narrative, model_used = await generate_narrative(
         bairro=request.cityName,
         risk=request.riskData,
         consensus=request.consensusData or {},
         nearby_reports=request.nearbyReports or [],
         apac_boletim=request.apacBoletim,
     )
-    return {"narrative": narrative}
+    return {"narrative": narrative, "model_used": model_used}

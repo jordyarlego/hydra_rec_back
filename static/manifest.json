@@ -1,0 +1,12 @@
+{
+  "name": "HydraRec",
+  "short_name": "HydraRec",
+  "description": "Risco climático em tempo real para bairros do Recife",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d0e11",
+  "theme_color": "#e8a030",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

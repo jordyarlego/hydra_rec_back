@@ -1,4 +1,5 @@
 import logging
+import asyncio
 from datetime import datetime, timezone, timedelta
 from services.supabase_client import get_service_client
 
@@ -35,6 +36,15 @@ def check_and_create_alerts(bairro: str) -> list[dict]:
                 "expires_at": expires,
             }).execute()
             created.append(alert.data[0] if alert.data else {})
+            try:
+                from services.push_service import broadcast_alert
+                score = {"moderado": 55, "alto": 70, "severo": 85}.get(severity, 70)
+                loop = asyncio.get_running_loop()
+                loop.create_task(broadcast_alert(bairro, score, severity.upper()))
+            except RuntimeError:
+                logger.debug("push alert skipped: no running event loop")
+            except Exception as e:
+                logger.warning(f"push alert schedule failed: {e}")
         except Exception as e:
             logger.warning(f"alert insert failed: {e}")
     return created

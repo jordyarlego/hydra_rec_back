@@ -92,41 +92,57 @@ async def get_scores(req: BatchScoreRequest):
     return {"scores": list(results)}
 
 
+_CONSENSUS_FALLBACK = {
+    "rain_next_24h_mm": 0.0, "rain_past_24h_mm": 0.0,
+    "humidity": 75, "pressure": 1013, "temperature": 28,
+    "apparent_temperature": 28, "uv_index": 0,
+    "wind_speed_kmh": 0, "wind_direction": 0, "weather_code": 0,
+    "confidence": "BAIXA", "sources": [], "sources_count": 0,
+    "raw_open_meteo": None,
+}
+
+
+async def fetch_dashboard(bairro: str) -> dict:
+    geo = await geocode_city(bairro)
+    lat, lon = geo["latitude"], geo["longitude"]
+
+    results = await asyncio.gather(
+        fetch_weather_consensus(lat, lon, bairro),
+        fetch_elevation(lat, lon),
+        scrape_tide_data(),
+        return_exceptions=True,
+    )
+    consensus = results[0] if isinstance(results[0], dict) else _CONSENSUS_FALLBACK
+    elevation = results[1] if isinstance(results[1], (int, float)) else 10.0
+    tide      = results[2] if isinstance(results[2], dict) else {"height": 1.5, "trend": "Desconhecido"}
+
+    risk = calculate_risk_score_v2(consensus, elevation, tide, bairro)
+
+    temp     = consensus.get("temperature", 28)
+    humidity = consensus.get("humidity", 70)
+    hi       = heat_index_steadman(temp, humidity)
+
+    from datetime import datetime
+    rain_2h = consensus.get("rain_next_24h_mm", 0) / 12
+    traffic = traffic_forecast_multiplier(rain_2h, datetime.now().hour)
+    weather = consensus.get("raw_open_meteo") or {}
+
+    return {
+        "location":      geo,
+        "weather":       weather,
+        "risk":          risk,
+        "consensus":     {k: v for k, v in consensus.items() if k != "raw_open_meteo"},
+        "heatIndex":     {"value": hi, "risk": heat_risk_label(hi)},
+        "traffic":       traffic,
+        "forecast6h":    build_forecast_6h(weather),
+        "forecastDaily": build_daily_forecast(weather),
+    }
+
+
 @router.get("/api/dashboard/{bairro}")
 async def get_dashboard_data(bairro: str):
     try:
-        geo = await geocode_city(bairro)
-        lat, lon = geo["latitude"], geo["longitude"]
-
-        consensus, elevation, tide = await asyncio.gather(
-            fetch_weather_consensus(lat, lon, bairro),
-            fetch_elevation(lat, lon),
-            scrape_tide_data(),
-        )
-
-        risk = calculate_risk_score_v2(consensus, elevation, tide, bairro)
-
-        temp = consensus.get("temperature", 28)
-        humidity = consensus.get("humidity", 70)
-        hi = heat_index_steadman(temp, humidity)
-
-        from datetime import datetime
-        hour_now = datetime.now().hour
-        rain_2h = consensus.get("rain_next_24h_mm", 0) / 12  # estimativa 2h
-        traffic = traffic_forecast_multiplier(rain_2h, hour_now)
-
-        weather = consensus.get("raw_open_meteo") or {}
-
-        return {
-            "location":      geo,
-            "weather":       weather,
-            "risk":          risk,
-            "consensus":     {k: v for k, v in consensus.items() if k != "raw_open_meteo"},
-            "heatIndex":     {"value": hi, "risk": heat_risk_label(hi)},
-            "traffic":       traffic,
-            "forecast6h":    build_forecast_6h(weather),
-            "forecastDaily": build_daily_forecast(weather),
-        }
+        return await fetch_dashboard(bairro)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -136,11 +152,22 @@ async def get_score_explanation(bairro: str):
     try:
         geo = await geocode_city(bairro)
         lat, lon = geo["latitude"], geo["longitude"]
-        consensus, elevation, tide = await asyncio.gather(
+        results = await asyncio.gather(
             fetch_weather_consensus(lat, lon, bairro),
             fetch_elevation(lat, lon),
             scrape_tide_data(),
+            return_exceptions=True,
         )
+        consensus = results[0] if isinstance(results[0], dict) else {
+            "rain_next_24h_mm": 0.0, "rain_past_24h_mm": 0.0,
+            "humidity": 75, "pressure": 1013, "temperature": 28,
+            "apparent_temperature": 28, "uv_index": 0,
+            "wind_speed_kmh": 0, "wind_direction": 0, "weather_code": 0,
+            "confidence": "BAIXA", "sources": [], "sources_count": 0,
+            "raw_open_meteo": None,
+        }
+        elevation = results[1] if isinstance(results[1], (int, float)) else 10.0
+        tide      = results[2] if isinstance(results[2], dict) else {"height": 1.5, "trend": "Desconhecido"}
         risk = calculate_risk_score_v2(consensus, elevation, tide, bairro)
         explanation = await explain_score(bairro, risk)
         return {"explanation": explanation, "score": risk["score"], "nivel": risk["nivel"]}
