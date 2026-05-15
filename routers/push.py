@@ -15,7 +15,22 @@ class PushSub(BaseModel):
 
 @router.get("/api/push/vapid-public-key")
 async def vapid_key():
-    return {"key": os.getenv("VAPID_PUBLIC_KEY", "")}
+    # Strip removes whitespace/newlines acidentais do .env
+    key = os.getenv("VAPID_PUBLIC_KEY", "").strip()
+
+    # Valida o formato antes de servir — uma key truncada gera
+    # "applicationServerKey is not valid" no PushManager do browser,
+    # erro confuso e difícil de rastrear sem essa validação.
+    if key and len(key) != 87:
+        return {
+            "key": "",
+            "error": (
+                f"VAPID_PUBLIC_KEY tem {len(key)} caracteres, mas o padrão exige 87. "
+                "Verifique se foi colada inteira no .env (sem quebra de linha)."
+            ),
+        }
+
+    return {"key": key}
 
 
 @router.post("/api/push/subscribe")
