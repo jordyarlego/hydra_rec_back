@@ -1,4 +1,31 @@
-# HydraRec — Backend
+# HydraRec V3 — Backend
+
+> Estado atual: plataforma cívica mapa-first para reports colaborativos no Recife.
+> V3 remove rotas/OpenWeather/Open-Meteo/INMET como fonte operacional e usa APAC como fonte meteorológica única.
+
+## V3 em produção
+
+- Clima: `services/apac_official.py` consome `/cemaden/`, `/meteorologia24h/` e `/blank_json_climatologico/`.
+- Reports: `POST /api/reports/with-photo` aceita foto, cruza snapshot APAC e dispara IA em background.
+- Fotos: Supabase Storage bucket `report-photos`.
+- Admin: `/admin` + endpoints `/api/admin/*`, protegidos por Supabase Auth role `admin`.
+- IA: `ai_vision`, `ai_validator`, `ai_assistant`; fallback heurístico quando Gemini não está disponível.
+- Dados oficiais: aplicar `migrations/v3_official_data_hub.sql` para ativar cruzamentos EMLURB/Defesa Civil.
+
+Variáveis mínimas:
+
+```env
+SUPABASE_URL=
+SUPABASE_KEY=
+SUPABASE_SERVICE_KEY=
+SUPABASE_STORAGE_BUCKET=report-photos
+IP_HASH_SALT=
+ALLOWED_ORIGINS=http://localhost:5173,http://localhost:8000
+GEMINI_API_KEY=        # opcional, melhora IA de foto
+NVIDIA_API_KEY=        # opcional, narrativa
+```
+
+`OPENWEATHER_KEY` é V2/deprecado.
 
 API FastAPI do sistema de monitoramento de risco climático em tempo real para bairros do Recife.
 

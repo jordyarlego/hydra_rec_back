@@ -13,5 +13,6 @@ async def get_narrative(request: NarrativeRequest):
         consensus=request.consensusData or {},
         nearby_reports=request.nearbyReports or [],
         apac_boletim=request.apacBoletim,
+        weather=request.weather,
     )
     return {"narrative": narrative, "model_used": model_used}

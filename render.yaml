@@ -17,7 +17,9 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_KEY
         sync: false
-      - key: OPENWEATHER_KEY
+      - key: SUPABASE_STORAGE_BUCKET
+        value: report-photos
+      - key: SUPABASE_JWT_SECRET
         sync: false
       - key: IP_HASH_SALT
         sync: false

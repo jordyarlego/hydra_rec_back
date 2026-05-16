@@ -1,0 +1,9 @@
+PROTOCOLO,TIPO_SERVICO,DATA_ABERTURA,DATA_FECHAMENTO,STATUS,DESCRICAO,BAIRRO,LOGRADOURO,LAT,LON
+2026001,Tapa-buracos,15/01/2026,20/01/2026,Concluído,Buraco profundo na calçada,Boa Viagem,Av. Boa Viagem,-8.1195,-34.9008
+2026002,Poda de árvore,01/02/2026,,Em andamento,Árvore obstruindo a via,Boa Viagem,Rua Barão de Souza Leão,-8.1200,-34.9010
+2026003,Drenagem,10/02/2026,,Aberto,Bueiro entupido causando alagamento,Imbiribeira,Av. Sul,-8.1070,-34.9020
+2026004,Tapa-buracos,05/03/2026,12/03/2026,Concluído,Buraco na pista,Imbiribeira,BR-101 Sul,-8.1080,-34.9015
+2026005,Iluminação pública,20/03/2026,,Aberto,Poste apagado há 3 dias,Casa Amarela,Av. Norte,-7.9900,-34.9100
+2026006,Limpeza,01/04/2026,05/04/2026,Concluído,Acúmulo de lixo na calçada,Boa Viagem,Rua das Pernambucanas,-8.1180,-34.8990
+2026007,Drenagem,15/04/2026,,Em andamento,Canal obstruído,Madalena,Av. Caxangá,-8.0520,-34.9250
+2026008,Tapa-buracos,20/04/2026,,Aberto,Buraco grande causando acidentes,Boa Viagem,Av. Eng. Domingos Ferreira,-8.1150,-34.9050

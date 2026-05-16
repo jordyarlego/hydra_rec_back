@@ -8,9 +8,17 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import asyncio
-from routers import dashboard, narrative, healthz, reports, route, ws, push, forecast, apac
+from routers import dashboard, narrative, healthz, reports, ws, push, apac, weather, admin, official_data, ai_reports
 
-app = FastAPI(title="HydraRec API v2", version="2.0.0")
+app = FastAPI(title="HydraRec API v3 — Cívico", version="3.0.0")
+_background_tasks: list[asyncio.Task] = []
+
+
+def background_workers_enabled() -> bool:
+    configured = os.getenv("ENABLE_BACKGROUND_WORKERS")
+    if configured is not None:
+        return configured.lower() in {"1", "true", "yes", "on"}
+    return os.getenv("RENDER") == "true"
 
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://localhost:8000").split(",")
 app.add_middleware(
@@ -25,17 +33,44 @@ app.include_router(dashboard.router)
 app.include_router(narrative.router)
 app.include_router(healthz.router)
 app.include_router(reports.router)
-app.include_router(route.router)
 app.include_router(ws.router)
 app.include_router(push.router)
-app.include_router(forecast.router)
 app.include_router(apac.router)
+app.include_router(weather.router)
+app.include_router(admin.router)
+app.include_router(official_data.router)
+app.include_router(ai_reports.router)
+
+
+@app.get("/api/public-config")
+async def public_config():
+    return {
+        "supabaseUrl": os.getenv("SUPABASE_URL", ""),
+        "supabaseAnonKey": os.getenv("SUPABASE_KEY", ""),
+    }
 
 
 @app.on_event("startup")
 async def startup():
+    if not background_workers_enabled():
+        return
+
     from workers.cron_alerts import start_cron
-    asyncio.create_task(start_cron(300))
+    from workers.ai_revalidation import start as start_ai_revalidation
+    _background_tasks.extend([
+        asyncio.create_task(start_cron(300)),
+        asyncio.create_task(start_ai_revalidation(60)),
+    ])
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    for task in _background_tasks:
+        task.cancel()
+
+    if _background_tasks:
+        await asyncio.gather(*_background_tasks, return_exceptions=True)
+        _background_tasks.clear()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -75,3 +110,12 @@ async def serve_dashboard():
     if not os.path.exists(path):
         return {"message": "HydraRec API v2 online — frontend não encontrado em static/"}
     return FileResponse(path, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/admin")
+@app.get("/admin/{path:path}")
+async def serve_admin(path: str = ""):
+    index = os.path.join(STATIC_DIR, "index.html")
+    if not os.path.exists(index):
+        return {"message": "HydraRec Admin indisponível — frontend não encontrado em static/"}
+    return FileResponse(index, headers={"Cache-Control": "no-store"})

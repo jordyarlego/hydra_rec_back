@@ -11,7 +11,7 @@ from main import app
 
 
 def test_app_created():
-    assert app.title == "HydraRec API v2"
+    assert app.title.startswith("HydraRec")
 
 
 def test_required_routes_exist():
@@ -19,8 +19,13 @@ def test_required_routes_exist():
     required = {
         "/api/healthz",
         "/api/dashboard/{bairro}",
-        "/api/scores",
         "/api/narrative",
+        "/api/weather",
+        "/api/reports",
+        "/api/reports/with-photo",
+        "/api/reports/nearby",
+        "/api/apac/boletim",
+        "/api/ai/report-assist",
     }
     missing = required - paths
     assert not missing, f"Rotas faltando: {missing}"

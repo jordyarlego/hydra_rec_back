@@ -1,11 +1,15 @@
+import asyncio
 import math
 import logging
 from datetime import datetime, timezone, timedelta
-from fastapi import APIRouter, HTTPException, Request
-from models.schemas import CreateReportPayload
+from typing import Optional
+from fastapi import APIRouter, HTTPException, Request, UploadFile, File, Form
+from models.schemas import CreateReportPayload, LikePayload
 from services.security import hash_ip
 from services.rate_limit import can_report
 from services.alerts_engine import check_and_create_alerts
+from services.weather_cross import snapshot_for_point
+from services.storage import upload_photo, PhotoError, MAX_BYTES as PHOTO_MAX_BYTES
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -19,13 +23,25 @@ def _haversine(lat1, lon1, lat2, lon2):
     return 2 * 6371 * math.asin(math.sqrt(a)) * 1000  # metros
 
 
-@router.post("/api/reports", status_code=201)
-async def create_report(payload: CreateReportPayload, request: Request):
-    distance_m = _haversine(payload.user_lat, payload.user_lon, payload.lat, payload.lon)
+async def _create_report_core(
+    *,
+    request: Request,
+    tipo: str,
+    severidade: str,
+    lat: float,
+    lon: float,
+    user_lat: float,
+    user_lon: float,
+    bairro: Optional[str],
+    descricao: Optional[str],
+    photo_url: Optional[str] = None,
+):
+    """Implementação compartilhada (JSON + multipart). Valida, cruza APAC, insere."""
+    distance_m = _haversine(user_lat, user_lon, lat, lon)
     if distance_m > MAX_REPORT_DISTANCE_M:
         raise HTTPException(
             status_code=400,
-            detail=f"O report precisa estar a até {MAX_REPORT_DISTANCE_M // 1000 if MAX_REPORT_DISTANCE_M % 1000 == 0 else MAX_REPORT_DISTANCE_M / 1000:.1f}km da sua localização atual.",
+            detail=f"O report precisa estar a até {MAX_REPORT_DISTANCE_M / 1000:.1f}km da sua localização atual.",
         )
 
     ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown").split(",")[0].strip()
@@ -34,29 +50,155 @@ async def create_report(payload: CreateReportPayload, request: Request):
     if not can_report(ip_hash):
         raise HTTPException(status_code=429, detail="Aguarde 5 minutos entre reports.")
 
+    weather_snapshot = await snapshot_for_point(lat, lon)
+    weather_snapshot_id = (weather_snapshot or {}).get("id")
+
     from services.supabase_client import get_service_client
     client = get_service_client()
 
     row = {
-        "type":        payload.tipo,
-        "severity":    payload.severidade,
-        "lat":         payload.lat,
-        "lon":         payload.lon,
-        "bairro":      payload.bairro,
-        "description": payload.descricao,
-        "ip_hash":     ip_hash,
-        "user_agent":  request.headers.get("User-Agent", "")[:200],
+        "type":                tipo,
+        "severity":            severidade,
+        "lat":                 lat,
+        "lon":                 lon,
+        "bairro":              bairro,
+        "description":         descricao,
+        "ip_hash":             ip_hash,
+        "user_agent":          request.headers.get("User-Agent", "")[:200],
+        "weather_snapshot_id": weather_snapshot_id,
+        "photo_url":           photo_url,
     }
+
+    # Lista de colunas V3 que devem ser dropadas caso o schema ainda seja V2
+    v3_only_cols = ("weather_snapshot_id", "photo_url")
+
     try:
         res = client.table("reports").insert(row).execute()
     except Exception as e:
-        logger.error(f"report insert failed: {e}")
-        raise HTTPException(status_code=500, detail="Erro ao salvar report.")
+        msg = str(e).lower()
+        if any(col in msg for col in v3_only_cols) or "column" in msg or "42703" in msg:
+            logger.warning("reports insert: schema V3 ausente; dropando colunas novas e re-tentando")
+            stripped = {k: v for k, v in row.items() if k not in v3_only_cols}
+            try:
+                res = client.table("reports").insert(stripped).execute()
+            except Exception as e2:
+                logger.error(f"report insert retry failed: {e2}")
+                raise HTTPException(status_code=500, detail="Erro ao salvar report.")
+        else:
+            logger.error(f"report insert failed: {e}")
+            raise HTTPException(status_code=500, detail="Erro ao salvar report.")
 
-    if payload.bairro:
-        check_and_create_alerts(payload.bairro)
+    if bairro:
+        check_and_create_alerts(bairro)
 
-    return {"id": res.data[0]["id"], "status": "criado"}
+    report_id = res.data[0]["id"]
+
+    # Cruzamento com dados oficiais (fire-and-forget)
+    asyncio.create_task(_cross_official(report_id))
+    if photo_url:
+        asyncio.create_task(_run_ai_pipeline(report_id, photo_url, weather_snapshot))
+
+    return {
+        "id": report_id,
+        "status": "criado",
+        "weather": weather_snapshot,
+        "photo_url": photo_url,
+    }
+
+
+async def _cross_official(report_id: str) -> None:
+    """Cruza report com dados oficiais em background. Falhas são logadas."""
+    try:
+        from services.geo_cross import cross_report_with_official_data
+        await cross_report_with_official_data(report_id)
+    except Exception as e:
+        logger.warning(f"official crossing failed for {report_id}: {e}")
+
+
+async def _run_ai_pipeline(report_id: str, photo_url: str, weather_snapshot: Optional[dict]) -> None:
+    try:
+        from services.ai_vision import describe_photo
+        from services.ai_validator import persist_validation
+        from services.supabase_client import get_service_client
+
+        vision = await describe_photo(photo_url)
+        client = get_service_client()
+        client.table("reports").update({
+            "photo_ai_description": vision.get("description"),
+            "photo_ai_confidence": vision.get("confidence"),
+        }).eq("id", report_id).execute()
+
+        res = client.table("reports").select("*").eq("id", report_id).execute()
+        if not res.data:
+            return
+        report = res.data[0]
+        report["weather"] = weather_snapshot
+        await persist_validation(report_id, report)
+    except Exception as e:
+        logger.warning("AI pipeline failed for %s: %s", report_id, e)
+
+
+@router.post("/api/reports", status_code=201)
+async def create_report(payload: CreateReportPayload, request: Request):
+    """Cria report SEM foto (JSON). Backward-compatible com clientes V2."""
+    return await _create_report_core(
+        request=request,
+        tipo=payload.tipo,
+        severidade=payload.severidade,
+        lat=payload.lat,
+        lon=payload.lon,
+        user_lat=payload.user_lat,
+        user_lon=payload.user_lon,
+        bairro=payload.bairro,
+        descricao=payload.descricao,
+    )
+
+
+@router.post("/api/reports/with-photo", status_code=201)
+async def create_report_with_photo(
+    request: Request,
+    tipo: str = Form(..., pattern="^(alagamento|deslizamento|queda_arvore|via_intransitavel|poste_caido|buraco|lixo|iluminacao|outro)$"),
+    severidade: str = Form(..., pattern="^(leve|moderado|grave)$"),
+    lat: float = Form(..., ge=-8.16, le=-7.93),
+    lon: float = Form(..., ge=-35.02, le=-34.83),
+    user_lat: float = Form(..., ge=-8.16, le=-7.93),
+    user_lon: float = Form(..., ge=-35.02, le=-34.83),
+    bairro: Optional[str] = Form(None),
+    descricao: Optional[str] = Form(None, max_length=280),
+    photo: Optional[UploadFile] = File(None),
+):
+    """
+    Cria report COM foto (multipart). Usado pelo flow Fase 2 (QuickReportSheet).
+    Campo `photo` opcional — endpoint funciona mesmo sem foto.
+    """
+    photo_url: Optional[str] = None
+
+    if photo is not None and photo.filename:
+        # Pre-check Content-Length antes de ler tudo na memória
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > PHOTO_MAX_BYTES + 4096:
+            raise HTTPException(status_code=413, detail=f"Foto maior que {PHOTO_MAX_BYTES // (1024*1024)}MB.")
+        data = await photo.read()
+        try:
+            photo_url = upload_photo(data, photo.content_type or "image/jpeg")
+        except PhotoError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.error(f"photo upload failed: {e}")
+            raise HTTPException(status_code=500, detail="Falha ao enviar foto.")
+
+    return await _create_report_core(
+        request=request,
+        tipo=tipo,
+        severidade=severidade,
+        lat=lat,
+        lon=lon,
+        user_lat=user_lat,
+        user_lon=user_lon,
+        bairro=bairro,
+        descricao=descricao,
+        photo_url=photo_url,
+    )
 
 
 @router.get("/api/reports/nearby")
@@ -105,6 +247,74 @@ async def confirm_report(report_id: str, request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/api/reports/{report_id}/like", status_code=200)
+async def like_report(report_id: str, payload: LikePayload, request: Request):
+    if payload.vote not in (-1, 1):
+        raise HTTPException(status_code=400, detail="Voto inválido.")
+
+    ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown").split(",")[0].strip()
+    ip_hash = hash_ip(ip)
+    from services.supabase_client import get_service_client
+    client = get_service_client()
+
+    try:
+        res = client.table("reports").select("id,ip_hash,likes_up,likes_down,bairro").eq("id", report_id).execute()
+        if not res.data:
+            raise HTTPException(status_code=404, detail="Report não encontrado.")
+        report = res.data[0]
+        if report.get("ip_hash") == ip_hash:
+            raise HTTPException(status_code=403, detail="Não pode votar no próprio report.")
+
+        previous = (client.table("report_likes")
+                    .select("vote")
+                    .eq("report_id", report_id)
+                    .eq("ip_hash", ip_hash)
+                    .execute())
+        old_vote = previous.data[0]["vote"] if previous.data else None
+
+        if old_vote is None:
+            client.table("report_likes").insert({
+                "report_id": report_id,
+                "ip_hash": ip_hash,
+                "vote": payload.vote,
+                "weight": 1.0,
+            }).execute()
+        elif old_vote != payload.vote:
+            (client.table("report_likes")
+             .update({"vote": payload.vote})
+             .eq("report_id", report_id)
+             .eq("ip_hash", ip_hash)
+             .execute())
+
+        likes_up = int(report.get("likes_up") or 0)
+        likes_down = int(report.get("likes_down") or 0)
+        if old_vote == 1:
+            likes_up -= 1
+        elif old_vote == -1:
+            likes_down -= 1
+        if payload.vote == 1:
+            likes_up += 1
+        else:
+            likes_down += 1
+
+        client.table("reports").update({
+            "likes_up": max(likes_up, 0),
+            "likes_down": max(likes_down, 0),
+        }).eq("id", report_id).execute()
+
+        if report.get("bairro"):
+            check_and_create_alerts(report["bairro"])
+
+        return {"likes_up": max(likes_up, 0), "likes_down": max(likes_down, 0), "vote": payload.vote}
+    except HTTPException:
+        raise
+    except Exception as e:
+        msg = str(e).lower()
+        if "report_likes" in msg or "likes_up" in msg or "column" in msg or "does not exist" in msg or "42703" in msg:
+            raise HTTPException(status_code=503, detail="Likes exigem a migration V3 aplicada.")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/api/alerts/active")
 async def get_active_alerts(bairro: str | None = None):
     from services.supabase_client import get_client
@@ -117,3 +327,60 @@ async def get_active_alerts(bairro: str | None = None):
         return {"alerts": res.data or []}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# IMPORTANTE: `/api/reports/{report_id}` precisa ficar por ÚLTIMO entre os GET
+# do router para não capturar rotas específicas como `/api/reports/nearby`.
+
+_REPORT_FIELDS_V3 = (
+    "id,type,severity,lat,lon,bairro,description,"
+    "photo_url,photo_ai_description,photo_ai_confidence,"
+    "ai_validation_score,ai_validation_notes,"
+    "likes_up,likes_down,status,confirmed_count,"
+    "weather_snapshot_id,created_at"
+)
+_REPORT_FIELDS_V2 = "id,type,severity,lat,lon,bairro,description,confirmed_count,created_at"
+
+
+@router.get("/api/reports/{report_id}")
+async def get_report(report_id: str):
+    """Detalhe completo de um report — usado pelo popup do pin no mapa."""
+    from services.supabase_client import get_client
+    client = get_client()
+
+    def _fetch(fields: str):
+        return (client.table("reports").select(fields).eq("id", report_id).execute())
+
+    try:
+        res = _fetch(_REPORT_FIELDS_V3)
+    except Exception as e:
+        # Schema V2 — fallback (migration V3 ainda não aplicada)
+        msg = str(e).lower()
+        if "column" in msg or "does not exist" in msg or "42703" in msg:
+            try:
+                res = _fetch(_REPORT_FIELDS_V2)
+            except Exception as e2:
+                logger.error(f"get_report fallback failed: {e2}")
+                raise HTTPException(status_code=500, detail="Erro ao buscar report.")
+        else:
+            logger.error(f"get_report failed: {e}")
+            raise HTTPException(status_code=500, detail="Erro ao buscar report.")
+
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Report não encontrado.")
+    report = res.data[0]
+
+    # Hidrata snapshot meteorológico (se houver e tabela existir)
+    weather = None
+    if report.get("weather_snapshot_id"):
+        try:
+            ws = (client.table("weather_snapshots")
+                  .select("*")
+                  .eq("id", report["weather_snapshot_id"])
+                  .execute())
+            weather = ws.data[0] if ws.data else None
+        except Exception as e:
+            logger.debug(f"weather snapshot hydrate failed: {e}")
+
+    report["weather"] = weather
+    return report

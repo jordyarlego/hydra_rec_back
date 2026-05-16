@@ -6,13 +6,13 @@ from fastapi import APIRouter
 router = APIRouter()
 
 
-async def _check_open_meteo() -> dict:
+async def _check_apac() -> dict:
+    """Pinga o endpoint cemaden da APAC — fonte única de chuva no V3."""
     start = time.time()
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(
-                "https://api.open-meteo.com/v1/forecast?latitude=-8.05&longitude=-34.88&current=temperature_2m"
-            )
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get("http://dados.apac.pe.gov.br:41120/cemaden/")
+            resp.raise_for_status()
         return {"status": "ok", "latency_ms": round((time.time() - start) * 1000)}
     except Exception as e:
         return {"status": "error", "detail": str(e)}
@@ -32,32 +32,47 @@ async def _check_supabase() -> dict:
 async def _check_gemini() -> dict:
     key = os.getenv("GEMINI_API_KEY", "")
     if not key:
-        return {"status": "not_configured", "detail": "usa fallback local quando necessário"}
+        return {"status": "not_configured", "detail": "IA usa fallback local quando ausente"}
     return {"status": "ok"}
+
+
+async def _check_storage() -> dict:
+    try:
+        from services.storage import bucket_exists, _BUCKET  # type: ignore
+        exists = bucket_exists()
+        if exists is None:
+            return {"status": "unknown", "bucket": _BUCKET, "detail": "SDK não suporta listagem"}
+        return {"status": "ok" if exists else "missing", "bucket": _BUCKET}
+    except Exception as e:
+        return {"status": "error", "detail": str(e)}
 
 
 @router.get("/api/healthz")
 async def healthz():
     import asyncio
-    open_meteo, supabase, gemini = await asyncio.gather(
-        _check_open_meteo(),
+    apac, supabase, gemini, storage = await asyncio.gather(
+        _check_apac(),
         _check_supabase(),
         _check_gemini(),
+        _check_storage(),
     )
 
     deps = {
-        "open_meteo": open_meteo,
+        "apac":     apac,
         "supabase": supabase,
-        "gemini": gemini,
-        "nvidia": {"status": "ok" if os.getenv("NVIDIA_API_KEY") else "not_configured"},
-        "openweather": {"status": "ok" if os.getenv("OPENWEATHER_KEY") else "not_configured"},
-        "web_push": {"status": "ok" if os.getenv("VAPID_PUBLIC_KEY") and os.getenv("VAPID_PRIVATE_KEY") else "not_configured"},
-        "routing": {"status": "ok", "provider": "OSRM público, sem chave"},
+        "gemini":   gemini,
+        "storage":  storage,
+        "web_push": {
+            "status": "ok"
+            if os.getenv("VAPID_PUBLIC_KEY") and os.getenv("VAPID_PRIVATE_KEY")
+            else "not_configured"
+        },
     }
 
-    required_ok = open_meteo.get("status") == "ok" and supabase.get("status") == "ok"
+    required_ok = apac.get("status") == "ok" and supabase.get("status") == "ok"
     return {
         "status": "healthy" if required_ok else "degraded",
+        "version": "v3",
         "dependencies": deps,
         "timestamp": time.time(),
     }

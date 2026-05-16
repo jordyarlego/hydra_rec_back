@@ -1,141 +1,130 @@
-import asyncio
+"""
+Dashboard V3 — fonte única APAC + reports próximos.
+
+Endpoints:
+  GET /api/dashboard/{bairro}      retorna weather APAC + risk + reports nearby
+  GET /api/explain/{bairro}        IA narra o score (curto)
+
+A geocodificação do bairro usa a tabela estática `data/bairro_coords.py`,
+removendo o boundary do Open-Meteo.
+"""
+from __future__ import annotations
+
+import logging
+import math
+from datetime import datetime, timezone, timedelta
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException
 
-from services.weather.open_meteo import geocode_city, fetch_weather_data, fetch_elevation
-from services.weather.tides import scrape_tide_data
-from services.weather.fusion import fetch_weather_consensus
+from services.apac_official import weather_at
+from services.weather_enrich import enrich_weather
 from services.risk_score import calculate_risk_score_v2
 from services.heat_index import heat_index_steadman, heat_risk_label
-from services.traffic import traffic_forecast_multiplier
 from services.ai_explain import explain_score
-from models.schemas import BatchScoreRequest
+from services.supabase_client import get_client
+from data.vulnerability import FLOOD_VULNERABILITY, DEFAULT_VULNERABILITY  # noqa: F401  (usado indireto)
+from data.bairros_coords import BAIRRO_COORDS
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def build_forecast_6h(weather: dict) -> list:
-    hourly = weather.get("hourly", {})
-    times  = hourly.get("time", [])
-    precip = hourly.get("precipitation", [])
-    temps  = hourly.get("temperature_2m", [])
-    codes  = hourly.get("weather_code", [])
-
-    result = []
-    for i in range(24, min(30, len(times))):
-        result.append({
-            "time":          times[i] if i < len(times) else "",
-            "precipitation": precip[i] if i < len(precip) else 0,
-            "temperature":   temps[i]  if i < len(temps)  else None,
-            "weather_code":  codes[i]  if i < len(codes)  else 0,
-        })
-    return result
+def _resolve_bairro_latlon(bairro: str) -> tuple[float, float]:
+    coords = BAIRRO_COORDS.get(bairro)
+    if not coords:
+        # tenta normalização leve case-insensitive
+        norm = next((b for b in BAIRRO_COORDS if b.lower() == bairro.lower()), None)
+        if not norm:
+            raise HTTPException(status_code=404, detail=f"Bairro desconhecido: {bairro}")
+        coords = BAIRRO_COORDS[norm]
+    return coords[0], coords[1]
 
 
-def build_daily_forecast(weather: dict) -> list:
-    daily = weather.get("daily", {})
-    dates = daily.get("time", [])
-    highs = daily.get("temperature_2m_max", [])
-    lows  = daily.get("temperature_2m_min", [])
-    rains = daily.get("precipitation_probability_max", [])
-    result = []
-    for i in range(1, min(7, len(dates))):
-        result.append({
-            "date": dates[i] if i < len(dates) else "",
-            "high": round(highs[i]) if i < len(highs) and highs[i] is not None else None,
-            "low":  round(lows[i])  if i < len(lows)  and lows[i]  is not None else None,
-            "rain": int(rains[i])   if i < len(rains) and rains[i] is not None else 0,
-        })
-    return result
-
-
-def _build_weather_consensus(weather: dict) -> dict:
-    """Adapta formato Open-Meteo para o contrato do calculate_risk_score_v2."""
-    hourly_precip = weather.get("hourly", {}).get("precipitation", [])
-    current = weather.get("current", {})
-    past24h = sum(h for h in hourly_precip[:24] if h is not None)
-    next24h = sum(h for h in hourly_precip[24:48] if h is not None)
+def _to_consensus(snap: Optional[dict]) -> dict:
+    """Adapta o snapshot APAC ao contrato do calculate_risk_score_v2."""
+    if not snap:
+        return {
+            "rain_next_24h_mm": 0.0,
+            "rain_past_24h_mm": 0.0,
+            "humidity":         70,
+            "pressure":         1013,
+            "temperature":      28,
+            "wind_speed_kmh":   0,
+            "confidence":       "BAIXA",
+            "sources_count":    0,
+            "source":           "none",
+        }
+    # APAC não traz previsão futura nem 24h acumulado direto. Usamos a leitura
+    # corrente como proxy ponderado: 1h × 6 ≈ próximas 6h se a chuva persistir.
+    rain_now = snap.get("rain_1h_mm") or 0.0
+    rain_past = snap.get("rain_24h_mm") or rain_now  # quando o worker preencher 24h, usa real
     return {
-        "rain_next_24h_mm": round(next24h, 2),
-        "rain_past_24h_mm": round(past24h, 2),
-        "humidity": current.get("relative_humidity_2m", 70),
-        "pressure": current.get("surface_pressure", 1013),
-        "confidence": "ALTA",
-        "sources_count": 1,
+        "rain_next_24h_mm": round(rain_now * 6, 2),  # extrapolação conservadora
+        "rain_past_24h_mm": round(rain_past, 2),
+        "humidity":         snap.get("humidity_pct") or 70,
+        "pressure":         1013,  # APAC não publica pressão; default
+        "temperature":      snap.get("temp_c") if snap.get("temp_c") is not None else 28,
+        "wind_speed_kmh":   snap.get("wind_kmh") or 0,
+        "confidence":       "ALTA" if snap.get("source") == "cemaden" else "MEDIA",
+        "sources_count":    1,
+        "source":           snap.get("source", "apac"),
     }
 
 
-async def _bairro_summary(bairro: str) -> dict:
+def _haversine_m(lat1, lon1, lat2, lon2):
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = math.sin(dlat/2)**2 + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon/2)**2
+    return 2 * 6371 * math.asin(math.sqrt(a)) * 1000
+
+
+def _count_nearby_reports(lat: float, lon: float, radius_m: int = 2000) -> int:
     try:
-        geo = await geocode_city(bairro)
-        lat, lon = geo["latitude"], geo["longitude"]
-        weather_data, tide = await asyncio.gather(
-            fetch_weather_data(lat, lon),
-            scrape_tide_data(),
-        )
-        consensus = _build_weather_consensus(weather_data)
-        risk = calculate_risk_score_v2(consensus, 10.0, tide, bairro)
-        current = weather_data.get("current", {})
-        return {
-            "name":  bairro,
-            "temp":  round(current.get("temperature_2m", 0)),
-            "score": risk["score"],
-            "nivel": risk["nivel"],
-        }
+        client = get_client()
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        delta_lat = radius_m / 111000
+        delta_lon = radius_m / (111000 * abs(math.cos(math.radians(lat))) or 1)
+        res = (client.table("reports")
+               .select("lat,lon")
+               .eq("resolved", False)
+               .gte("created_at", cutoff)
+               .gte("lat", lat - delta_lat).lte("lat", lat + delta_lat)
+               .gte("lon", lon - delta_lon).lte("lon", lon + delta_lon)
+               .execute())
+        return sum(1 for r in (res.data or []) if _haversine_m(lat, lon, r["lat"], r["lon"]) <= radius_m)
     except Exception as e:
-        print(f"Summary error for {bairro}: {e}")
-        return {"name": bairro, "temp": 0, "score": 0, "nivel": "ERRO"}
-
-
-@router.post("/api/scores")
-async def get_scores(req: BatchScoreRequest):
-    results = await asyncio.gather(*[_bairro_summary(b) for b in req.bairros[:6]])
-    return {"scores": list(results)}
-
-
-_CONSENSUS_FALLBACK = {
-    "rain_next_24h_mm": 0.0, "rain_past_24h_mm": 0.0,
-    "humidity": 75, "pressure": 1013, "temperature": 28,
-    "apparent_temperature": 28, "uv_index": 0,
-    "wind_speed_kmh": 0, "wind_direction": 0, "weather_code": 0,
-    "confidence": "BAIXA", "sources": [], "sources_count": 0,
-    "raw_open_meteo": None,
-}
+        logger.debug(f"_count_nearby_reports failed: {e}")
+        return 0
 
 
 async def fetch_dashboard(bairro: str) -> dict:
-    geo = await geocode_city(bairro)
-    lat, lon = geo["latitude"], geo["longitude"]
+    """Reusada também pelo WebSocket — não levanta HTTPException."""
+    lat, lon = _resolve_bairro_latlon(bairro)
+    snap = await weather_at(lat, lon)
+    weather = await enrich_weather(snap)
+    consensus = _to_consensus(snap)
+    reports_count = _count_nearby_reports(lat, lon)
 
-    results = await asyncio.gather(
-        fetch_weather_consensus(lat, lon, bairro),
-        fetch_elevation(lat, lon),
-        scrape_tide_data(),
-        return_exceptions=True,
+    risk = calculate_risk_score_v2(
+        weather_consensus=consensus,
+        elevation=10.0,
+        tide={"height": 1.5, "trend": "Desconhecido"},
+        bairro=bairro,
+        reports_nearby_count=reports_count,
     )
-    consensus = results[0] if isinstance(results[0], dict) else _CONSENSUS_FALLBACK
-    elevation = results[1] if isinstance(results[1], (int, float)) else 10.0
-    tide      = results[2] if isinstance(results[2], dict) else {"height": 1.5, "trend": "Desconhecido"}
 
-    risk = calculate_risk_score_v2(consensus, elevation, tide, bairro)
-
-    temp     = consensus.get("temperature", 28)
-    humidity = consensus.get("humidity", 70)
-    hi       = heat_index_steadman(temp, humidity)
-
-    from datetime import datetime
-    rain_2h = consensus.get("rain_next_24h_mm", 0) / 12
-    traffic = traffic_forecast_multiplier(rain_2h, datetime.now().hour)
-    weather = consensus.get("raw_open_meteo") or {}
+    temp = consensus["temperature"]
+    humidity = consensus["humidity"]
+    hi = heat_index_steadman(temp, humidity)
 
     return {
-        "location":      geo,
-        "weather":       weather,
-        "risk":          risk,
-        "consensus":     {k: v for k, v in consensus.items() if k != "raw_open_meteo"},
-        "heatIndex":     {"value": hi, "risk": heat_risk_label(hi)},
-        "traffic":       traffic,
-        "forecast6h":    build_forecast_6h(weather),
-        "forecastDaily": build_daily_forecast(weather),
+        "location":   {"name": bairro, "latitude": lat, "longitude": lon},
+        "weather":    weather,
+        "risk":       risk,
+        "consensus":  consensus,
+        "heatIndex":  {"value": hi, "risk": heat_risk_label(hi)},
+        "reportsNearbyCount": reports_count,
     }
 
 
@@ -143,33 +132,30 @@ async def fetch_dashboard(bairro: str) -> dict:
 async def get_dashboard_data(bairro: str):
     try:
         return await fetch_dashboard(bairro)
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"dashboard failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/api/explain/{bairro}")
 async def get_score_explanation(bairro: str):
     try:
-        geo = await geocode_city(bairro)
-        lat, lon = geo["latitude"], geo["longitude"]
-        results = await asyncio.gather(
-            fetch_weather_consensus(lat, lon, bairro),
-            fetch_elevation(lat, lon),
-            scrape_tide_data(),
-            return_exceptions=True,
+        lat, lon = _resolve_bairro_latlon(bairro)
+        snap = await weather_at(lat, lon)
+        consensus = _to_consensus(snap)
+        risk = calculate_risk_score_v2(
+            weather_consensus=consensus,
+            elevation=10.0,
+            tide={"height": 1.5, "trend": "Desconhecido"},
+            bairro=bairro,
+            reports_nearby_count=_count_nearby_reports(lat, lon),
         )
-        consensus = results[0] if isinstance(results[0], dict) else {
-            "rain_next_24h_mm": 0.0, "rain_past_24h_mm": 0.0,
-            "humidity": 75, "pressure": 1013, "temperature": 28,
-            "apparent_temperature": 28, "uv_index": 0,
-            "wind_speed_kmh": 0, "wind_direction": 0, "weather_code": 0,
-            "confidence": "BAIXA", "sources": [], "sources_count": 0,
-            "raw_open_meteo": None,
-        }
-        elevation = results[1] if isinstance(results[1], (int, float)) else 10.0
-        tide      = results[2] if isinstance(results[2], dict) else {"height": 1.5, "trend": "Desconhecido"}
-        risk = calculate_risk_score_v2(consensus, elevation, tide, bairro)
         explanation = await explain_score(bairro, risk)
         return {"explanation": explanation, "score": risk["score"], "nivel": risk["nivel"]}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"explain failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

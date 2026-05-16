@@ -13,10 +13,11 @@ class NarrativeRequest(BaseModel):
     consensusData: Optional[dict] = None
     nearbyReports: Optional[list] = None
     apacBoletim: Optional[Any] = None
+    weather: Optional[dict] = None
 
 
 class CreateReportPayload(BaseModel):
-    tipo: str = Field(..., pattern="^(alagamento|deslizamento|queda_arvore|via_intransitavel|poste_caido|outro)$")
+    tipo: str = Field(..., pattern="^(alagamento|deslizamento|queda_arvore|via_intransitavel|poste_caido|buraco|lixo|iluminacao|outro)$")
     severidade: str = Field(..., pattern="^(leve|moderado|grave)$")
     lat: float = Field(..., ge=-8.16, le=-7.93)
     lon: float = Field(..., ge=-35.02, le=-34.83)
@@ -24,6 +25,10 @@ class CreateReportPayload(BaseModel):
     user_lon: float = Field(..., ge=-35.02, le=-34.83)
     descricao: Optional[str] = Field(None, max_length=280)
     bairro: Optional[str] = None
+
+
+class LikePayload(BaseModel):
+    vote: int = Field(..., ge=-1, le=1)
 
 
 class ReportOut(BaseModel):

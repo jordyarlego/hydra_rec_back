@@ -1,0 +1,6 @@
+PROTOCOLO,TIPO_ATENDIMENTO,DATA,STATUS,DESCRICAO,BAIRRO,LOGRADOURO,LAT,LON
+DC2026001,Alagamento,15/01/2026,Concluído,Alagamento em via pública após chuva intensa,Boa Viagem,Av. Boa Viagem,-8.1195,-34.9008
+DC2026002,Barreira,10/02/2026,Concluído,Risco de deslizamento em encosta,Jordão,Estrada do Jordão,-8.1300,-34.9200
+DC2026003,Alagamento,20/02/2026,Em andamento,Via completamente alagada,Imbiribeira,BR-101 Sul,-8.1070,-34.9020
+DC2026004,Queda de árvore,05/03/2026,Concluído,Árvore caiu sobre a calçada,Boa Viagem,Rua Barão de Souza Leão,-8.1200,-34.9010
+DC2026005,Alagamento,15/04/2026,Aberto,Residências alagadas,Tejipió,Av. Tejipió,-8.0800,-34.9400
