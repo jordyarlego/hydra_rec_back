@@ -46,11 +46,22 @@ async def get_outlook(
     """
     Cenário APAC para o ponto:
       - nearest_stations: pluviômetros CEMADEN mais próximos (até 4)
-      - top_rmr: top 3 da RMR por intensidade (pra detectar chuva em outro bairro)
+      - top_rmr: top 3 da RMR por intensidade COM distância até o ponto
       - climatology: média histórica do mês corrente
     """
+    from services.weather_enrich import _haversine_m
     nearest = await nearest_rmr_stations(lat, lon, limit=4)
-    top     = await top_rmr_stations(limit=3)
+    top     = await top_rmr_stations(limit=5)
+
+    # Enriquece o top_rmr com distância e ordena por proximidade
+    for st in top:
+        try:
+            st["distance_km"] = round(_haversine_m(lat, lon, st["lat"], st["lon"]) / 1000, 1)
+        except Exception:
+            st["distance_km"] = None
+    top.sort(key=lambda s: (s.get("distance_km") if s.get("distance_km") is not None else 9999))
+    top = top[:3]
+
     climatology = await monthly_climatology(lat, lon)
     return {
         "nearest_stations": nearest,

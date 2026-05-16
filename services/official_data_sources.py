@@ -75,20 +75,11 @@ SOURCES: dict[str, SourceConfig] = {
     "postes_iluminacao": SourceConfig(
         name="Postes de Iluminação Pública",
         agency="EMLURB",
-        ckan_slug="postes-de-iluminacao-publica",
+        ckan_slug="postes-iluminacao-publica-do-recife",   # slug corrigido em 2026
         format="csv",
         encoding="utf-8",
-        cache_ttl_h=168,  # 1 semana — dado estático
-        notes="Catálogo de postes de iluminação pública do Recife.",
-    ),
-    "logradouros": SourceConfig(
-        name="Trechos de Logradouros por Bairro",
-        agency="PCR / EMPREL",
-        ckan_slug="trechos-de-logradouros-por-bairro",
-        format="csv",
-        encoding="latin-1",
         cache_ttl_h=168,
-        notes="Trechos de vias urbanas com bairro e microregião.",
+        notes="Catálogo de postes de iluminação pública do Recife.",
     ),
 }
 

@@ -32,6 +32,7 @@ def calculate_risk_score_v2(
     bairro: str,
     reports_nearby_count: int = 0,
     vulnerability: float | None = None,
+    apac_alert_nivel: str | None = None,
 ) -> RiskBreakdown:
     next_24h   = weather_consensus["rain_next_24h_mm"]
     past_24h   = weather_consensus["rain_past_24h_mm"]
@@ -49,30 +50,22 @@ def calculate_risk_score_v2(
     components: dict[str, float] = {}
 
     # ── Chuva prevista: principal fator ─────────────────────────────────
-    # max 35pts. f(11mm)≈14, f(25mm)≈25, f(50mm)≈31
     components["rain_next"] = calc_rain_points(next_24h, max_pts=35.0, k=22.0)
 
     # ── Chuva acumulada: solo saturado amplia risco, peso menor ─────────
-    # max 10pts. Só conta quando há chuva ativa.
     components["rain_past"] = calc_rain_points(past_24h, max_pts=10.0, k=20.0) if has_rain else 0.0
 
     # ── Maré: risco autônomo reduzido sem chuva ─────────────────────────
-    # max 10pts com chuva, 2pts sem chuva (storm surge precisa de chuva intensa)
     tide_pts = min(tide["height"] / 3.0, 1.0) * 10.0
-    components["tide"] = tide_pts if has_rain else tide_pts * 0.2
+    components["tide"] = tide_pts if has_rain else tide_pts * 0.1
 
     # ── Vulnerabilidade histórica: amplifica risco pluvial ───────────────
-    # max ≈8pts (vulnerability=1.0). Reduzido de 12→8 para não inflar score com dados históricos.
-    components["vulnerability"] = (vulnerability * 8.0) if has_rain else 0.0
+    # Reduzido de 8 → 5 pts pra não inflar score em dia limpo
+    components["vulnerability"] = (vulnerability * 5.0) if has_rain else 0.0
 
-    # ── Altitude: baixadas acumulam mais ────────────────────────────────
+    # ── Altitude: baixadas acumulam mais (só com chuva) ────────────────
     if has_rain:
-        if elevation < 5:
-            components["altitude"] = 4.0
-        elif elevation < 15:
-            components["altitude"] = 2.0
-        else:
-            components["altitude"] = 0.0
+        components["altitude"] = 4.0 if elevation < 5 else (2.0 if elevation < 15 else 0.0)
     else:
         components["altitude"] = 0.0
 
@@ -83,6 +76,17 @@ def calculate_risk_score_v2(
         components["atmospheric"] = 3.0
     else:
         components["atmospheric"] = 0.0
+
+    # ── Boletim APAC: peso forte do alerta oficial ──────────────────────
+    apac_nivel = (apac_alert_nivel or "SEGURO").upper()
+    apac_pts = {
+        "SEVERO":   30.0,
+        "ALTO":     20.0,
+        "MODERADO": 10.0,
+        "ATENCAO":   3.0,
+        "SEGURO":    0.0,
+    }
+    components["apac_alert"] = apac_pts.get(apac_nivel, 0.0)
 
     # ── Reports da comunidade: sempre contam ────────────────────────────
     if reports_nearby_count >= 3:

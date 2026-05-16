@@ -123,7 +123,7 @@ async def test_import_emlurb_156_handles_offline_source(mock_supabase):
     with (
         patch("services.official_importer._get_client", return_value=mock_supabase),
         patch(
-            "services.official_importer._discover_resource_url",
+            "services.official_importer._pick_latest_resource_url",
             new=AsyncMock(return_value=None),
         ),
     ):

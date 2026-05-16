@@ -105,13 +105,14 @@ def calculate_priority(
 
     # 4. Score de validação por IA
     ai_score = report.get("ai_validation_score")
+    has_photo = bool(report.get("photo_url") or report.get("photo_ai_description") or report.get("photo_ai_confidence") is not None)
     if ai_score is not None:
         if ai_score >= 0.75:
             score += 15
-            reasons.append("Foto validada pela IA com alta confiança")
+            reasons.append("Evidências do report têm alta coerência" if not has_photo else "Foto validada pela IA com alta confiança")
         elif ai_score >= 0.5:
             score += 7
-            reasons.append("Foto parcialmente validada pela IA")
+            reasons.append("Report parcialmente coerente com os dados disponíveis" if not has_photo else "Foto parcialmente validada pela IA")
         elif ai_score < 0.25:
             score -= 15
             reasons.append("IA detectou possível inconsistência no report")

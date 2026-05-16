@@ -105,6 +105,7 @@ async def fetch_dashboard(bairro: str) -> dict:
     weather = await enrich_weather(snap)
     consensus = _to_consensus(snap)
     reports_count = _count_nearby_reports(lat, lon)
+    apac_nivel = (weather.get("alert") or {}).get("nivel")
 
     risk = calculate_risk_score_v2(
         weather_consensus=consensus,
@@ -112,6 +113,7 @@ async def fetch_dashboard(bairro: str) -> dict:
         tide={"height": 1.5, "trend": "Desconhecido"},
         bairro=bairro,
         reports_nearby_count=reports_count,
+        apac_alert_nivel=apac_nivel,
     )
 
     temp = consensus["temperature"]

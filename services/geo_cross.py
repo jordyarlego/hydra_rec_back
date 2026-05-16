@@ -149,7 +149,7 @@ def find_neighborhood(lat: float, lon: float) -> dict:
 def nearest_road(lat: float, lon: float, max_m: float = 500) -> Optional[dict]:
     """Retorna a via mais próxima de (lat, lon) dentro de max_m metros."""
     try:
-        from services.supabase_client import get_client
+        from services.supabase_client import get_service_client as get_client  # bypass RLS
         res = get_client().table("official_roads").select(
             "id, name, neighborhood, rpa, lat, lon"
         ).not_.is_("lat", "null").not_.is_("lon", "null").limit(2000).execute()
@@ -184,7 +184,7 @@ def find_similar_official_requests(
     related_types = _REPORT_TO_OFFICIAL.get(report_type, [])
 
     try:
-        from services.supabase_client import get_client
+        from services.supabase_client import get_service_client as get_client  # bypass RLS
         client = get_client()
 
         # Busca por lat/lon dentro de bbox aproximado (±0.005° ≈ 500m)
@@ -257,7 +257,7 @@ async def cross_report_with_official_data(report_id: str) -> Optional[dict]:
     Chamado como fire-and-forget após criação do report.
     """
     try:
-        from services.supabase_client import get_client
+        from services.supabase_client import get_service_client as get_client  # bypass RLS
         client = get_client()
 
         res = client.table("reports").select(

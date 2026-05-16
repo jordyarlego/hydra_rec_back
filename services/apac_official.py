@@ -142,8 +142,37 @@ def _now_iso() -> str:
 # Parsers — cada endpoint vira list[Station]
 # ─────────────────────────────────────────────────────────────
 
+def _clean_station_name(raw: str) -> str:
+    """
+    Remove prefixos [CEMADEN], [APAC]... e sufixos numéricos do código
+    interno ("Janga 2" → "Janga", "Cruz de Rebouças 2" → "Cruz de Rebouças").
+    """
+    import re
+    name = str(raw or "").strip()
+    # Prefixos institucionais
+    name = re.sub(r"^\[(CEMADEN|APAC|INMET|FEMAR)\]\s*", "", name, flags=re.I)
+    # Sufixo " 2", " 3" etc — código interno de estação, não interessa ao usuário
+    name = re.sub(r"\s+\d+\s*$", "", name)
+    # Title case mantendo preposições em minúsculo
+    name = name.strip()
+    if name.isupper():
+        # "PAULISTA" → "Paulista"
+        parts = []
+        for w in name.split():
+            if w.lower() in ("de", "da", "do", "das", "dos", "e"):
+                parts.append(w.lower())
+            else:
+                parts.append(w.title())
+        name = " ".join(parts)
+        if parts and parts[0] in ("de", "da", "do", "das", "dos"):
+            parts[0] = parts[0].title()
+            name = " ".join(parts)
+    return name
+
+
 def _parse_cemaden(records: list) -> list[Station]:
-    stations: list[Station] = []
+    """Parseia + deduplica por (lat, lon, nome) — JSON cemaden costuma ter dups."""
+    by_key: dict[str, Station] = {}
     for r in records or []:
         inner = _parse_dados(r)
         if not inner:
@@ -158,9 +187,10 @@ def _parse_cemaden(records: list) -> list[Station]:
             or r.get("Data-hora")
             or _now_iso()
         )
-        stations.append(Station(
+        name = _clean_station_name(r.get("Estação") or inner.get("nome") or "Estação")
+        station = Station(
             id=str(r.get("Codigo_gmmc") or inner.get("codestacao") or inner.get("id_estacao") or ""),
-            name=str(r.get("Estação") or inner.get("nome") or "Estação CEMADEN").strip(),
+            name=name or "Estação",
             lat=lat,
             lon=lon,
             kind="cemaden",
@@ -168,8 +198,15 @@ def _parse_cemaden(records: list) -> list[Station]:
             rain_mm=rain if rain is not None and rain >= 0 else 0.0,
             municipio=inner.get("cidade"),
             raw=inner,
-        ))
-    return stations
+        )
+        key = f"{round(lat, 4)}|{round(lon, 4)}|{name.lower()}"
+        prev = by_key.get(key)
+        # Mantém a leitura mais recente (e/ou maior chuva quando o timestamp empata)
+        if prev is None or str(station.captured_at) > str(prev.captured_at):
+            by_key[key] = station
+        elif (station.rain_mm or 0) > (prev.rain_mm or 0):
+            by_key[key] = station
+    return list(by_key.values())
 
 
 def _parse_meteorologia24h(records: list) -> list[Station]:
@@ -194,7 +231,7 @@ def _parse_meteorologia24h(records: list) -> list[Station]:
         captured = inner.get("dataHora") or r.get("Data-hora") or _now_iso()
         stations.append(Station(
             id=str(r.get("Codigo_gmmc") or inner.get("codestacao") or ""),
-            name=str(r.get("Estação") or inner.get("nome") or "Estação APAC").strip(),
+            name=_clean_station_name(r.get("Estação") or inner.get("nome") or "Estação"),
             lat=lat,
             lon=lon,
             kind="meteorologia24h",
@@ -238,7 +275,7 @@ def _parse_climatologico(records: list) -> list[Station]:
             captured = dados.get("TIMESTAMP") or region.get("Resumo", {}).get("data_hora_leitura") or _now_iso()
             station = Station(
                 id=str(est.get("nomeEstacao") or "")[:96],
-                name=str(est.get("nomeEstacao") or "Estação climatológica").strip(),
+                name=_clean_station_name(est.get("nomeEstacao") or "Estação climatológica"),
                 lat=lat,
                 lon=lon,
                 kind="climatologico",

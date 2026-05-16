@@ -84,12 +84,25 @@ async def _discover_resource_url(ckan_slug: str, fmt: str) -> Optional[str]:
 
 
 async def _fetch_csv(url: str, encoding: str = "utf-8") -> list[dict]:
-    """Baixa um CSV e retorna lista de dicts."""
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+    """
+    Baixa um CSV e retorna lista de dicts. Detecta automaticamente o delimiter
+    (CKAN do Recife usa ';' em vários datasets).
+    """
+    async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as client:
         resp = await client.get(url)
         resp.raise_for_status()
-    content = resp.content.decode(encoding, errors="replace")
-    reader = csv.DictReader(io.StringIO(content))
+    # Tenta utf-8 primeiro, depois latin-1
+    raw = resp.content
+    try:
+        content = raw.decode(encoding)
+    except UnicodeDecodeError:
+        content = raw.decode("latin-1", errors="replace")
+
+    # Detecta delimiter na primeira linha (semicolon vs comma)
+    first_line = content.split("\n", 1)[0]
+    delimiter = ";" if first_line.count(";") > first_line.count(",") else ","
+
+    reader = csv.DictReader(io.StringIO(content), delimiter=delimiter)
     return [dict(row) for row in reader]
 
 
@@ -172,57 +185,131 @@ async def import_neighborhoods() -> dict:
     return {"ok": ok, "err": err, "duration_s": round(duration, 2)}
 
 
-async def import_emlurb_156() -> dict:
-    """Importa chamados EMLURB 156 do Portal de Dados Abertos do Recife."""
+def _col(row: dict, *candidates: str, default=None):
+    """Busca coluna case-insensitive em qualquer um dos nomes candidatos."""
+    for c in candidates:
+        cl = c.lower()
+        for k, v in row.items():
+            if k and k.lower().strip() == cl:
+                return v if (v not in (None, "")) else default
+    return default
+
+
+async def _pick_latest_resource_url(ckan_slug: str, fmt: str = "CSV") -> str | None:
+    """
+    Escolhe o resource mais recente do dataset (CKAN do Recife costuma ter
+    1 arquivo por ano — pegamos o último criado).
+    """
+    url = f"{CKAN_PACKAGE_SHOW}?id={ckan_slug}"
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True) as client:
+            resp = await client.get(url)
+            if not resp.is_success:
+                return None
+            data = resp.json()
+            resources = data.get("result", {}).get("resources", [])
+            matching = [r for r in resources if r.get("format", "").upper() == fmt.upper()]
+            if not matching:
+                matching = resources
+            # Ordena por created desc
+            matching.sort(key=lambda r: r.get("created", ""), reverse=True)
+            return matching[0].get("url") if matching else None
+    except Exception as e:
+        logger.warning(f"resource discovery failed for {ckan_slug}: {e}")
+        return None
+
+
+# MVP: bairros do entorno central que vamos apresentar primeiro
+MVP_BAIRROS = {
+    "soledade", "santo amaro", "boa vista", "graças", "gracas",
+    "madalena", "espinheiro", "ilha do leite", "paissandu",
+    "torre", "derby", "casa forte", "encruzilhada",
+    "rosarinho", "aflitos", "torreão", "torreao",
+    "campo grande", "ponto de parada", "hipódromo", "hipodromo",
+    "santo antônio", "santo antonio", "são josé", "sao jose",
+    "recife", "ilha de joana bezerra",
+}
+
+
+def _filter_mvp(rows: list[dict], bairro_field: str = "neighborhood") -> list[dict]:
+    """Mantém apenas bairros do MVP central. Reduz volume pra apresentação."""
+    out = []
+    for r in rows:
+        nb = (r.get(bairro_field) or "").strip().lower()
+        if nb in MVP_BAIRROS:
+            out.append(r)
+    return out
+
+
+async def import_emlurb_156(mvp_only: bool = True) -> dict:
+    """
+    Importa chamados EMLURB 156 do Portal de Dados Abertos do Recife.
+    Schema real (2026): GRUPOSERVICO_DESCRICAO, SERVICO_DESCRICAO,
+                         LOGRADOURO, BAIRRO, RPA, DATA_DEMANDA, SITUACAO,
+                         DATA_ULT_SITUACAO, latitude, longitude.
+    Delimitador: ;
+    Se mvp_only=True, filtra pra bairros centrais (Madalena, Graças, etc).
+    """
     source_cfg = SOURCES["emlurb_156"]
     start = time.time()
     ok = err = 0
+    first_error: Optional[str] = None
 
-    resource_url = await _discover_resource_url(source_cfg.ckan_slug, source_cfg.format)
+    resource_url = await _pick_latest_resource_url(source_cfg.ckan_slug, "CSV")
     if not resource_url:
-        msg = f"Não foi possível descobrir a URL do dataset {source_cfg.ckan_slug}"
+        msg = f"Não foi possível descobrir CSV de {source_cfg.ckan_slug}"
         logger.warning(msg)
         _log_import("emlurb_156", 0, 0, time.time() - start, msg)
         return {"ok": 0, "err": 0, "error": msg}
 
     try:
-        rows_raw = await _fetch_csv(resource_url, source_cfg.encoding)
+        rows_raw = await _fetch_csv(resource_url, encoding="utf-8")
+        logger.info(f"EMLURB CSV baixado: {len(rows_raw)} linhas")
     except Exception as e:
         _log_import("emlurb_156", 0, 1, time.time() - start, str(e))
         return {"ok": 0, "err": 1, "error": str(e)}
 
-    # Normalização: tenta múltiplos nomes de coluna (o portal às vezes muda)
-    def _col(row: dict, *candidates: str, default=None):
-        for c in candidates:
-            for k, v in row.items():
-                if k.lower().strip() == c.lower():
-                    return v or default
-        return default
-
     rows = []
-    for raw in rows_raw:
+    for idx, raw in enumerate(rows_raw):
         try:
-            ext_id = _col(raw, "protocolo", "id", "numero")
-            service_type = _col(raw, "tipo_servico", "tipo", "servico", default="")
+            grupo = _col(raw, "GRUPOSERVICO_DESCRICAO", "grupo_servico", "tipo_servico", default="")
+            servico = _col(raw, "SERVICO_DESCRICAO", "servico_descricao", "servico", default="")
+            categoria = f"{grupo} - {servico}".strip(" -")
+            ext_id = _col(raw, "protocolo", "id_demanda", "id", "numero")
+            if not ext_id:
+                bairro = _col(raw, "BAIRRO", "bairro", default="")
+                data = _col(raw, "DATA_DEMANDA", "data_demanda", default="")
+                ext_id = f"emlurb-{idx}-{bairro}-{data}"[:120]
+
+            rpa_raw = _col(raw, "RPA", "rpa")
             rows.append({
-                "external_id": str(ext_id) if ext_id else None,
-                "source": "emlurb_156",
-                "agency": "EMLURB",
-                "service_type": service_type,
-                "category": _normalize_category(service_type, source_cfg.category_map),
-                "status": _col(raw, "status", "situacao", "estado", default=""),
-                "description": _col(raw, "descricao", "observacao", "assunto", default=""),
-                "neighborhood": _col(raw, "bairro", "bairro_nome", default=""),
-                "street_name": _col(raw, "logradouro", "endereco", "rua", default=""),
-                "lat": _safe_float(_col(raw, "lat", "latitude", "y")),
-                "lon": _safe_float(_col(raw, "lon", "long", "longitude", "x")),
-                "opened_at": _safe_date(_col(raw, "data_abertura", "data_solicitacao", "data")),
-                "closed_at": _safe_date(_col(raw, "data_fechamento", "data_encerramento")),
-                "raw": {k: v for k, v in raw.items() if v not in (None, "", "null")},
+                "external_id":   str(ext_id)[:120],
+                "source":        "emlurb_156",
+                "agency":        "EMLURB",
+                "service_type":  (servico or grupo)[:200] or None,
+                "category":      _normalize_category(categoria, source_cfg.category_map),
+                "status":        (_col(raw, "SITUACAO", "situacao", default="") or "")[:80] or None,
+                "description":   categoria[:500] or None,
+                "neighborhood":  (_col(raw, "BAIRRO", "bairro", default="") or "").strip() or None,
+                "rpa":           f"RPA {str(rpa_raw).strip()}" if rpa_raw else None,
+                "street_name":   (_col(raw, "LOGRADOURO", "logradouro", default="") or "").strip()[:200] or None,
+                "lat":           _safe_float(_col(raw, "latitude", "lat")),
+                "lon":           _safe_float(_col(raw, "longitude", "lon", "long")),
+                "opened_at":     _safe_date(_col(raw, "DATA_DEMANDA", "data_demanda")),
+                "closed_at":     _safe_date(_col(raw, "DATA_ULT_SITUACAO", "data_ult_situacao")),
+                # raw minimalista pra não estourar tamanho
+                "raw":           None,
             })
         except Exception as e:
-            logger.debug(f"EMLURB row parse error: {e}")
+            logger.debug(f"EMLURB row {idx} parse error: {e}")
             err += 1
+
+    if mvp_only:
+        before = len(rows)
+        rows = _filter_mvp(rows, "neighborhood")
+        logger.info(f"EMLURB MVP filter: {len(rows)} de {before} (bairros centrais)")
+
+    logger.info(f"EMLURB normalizado: {len(rows)} válidas / {err} erros de parse")
 
     client = _get_client()
     for i in range(0, len(rows), _BATCH_SIZE):
@@ -233,62 +320,82 @@ async def import_emlurb_156() -> dict:
             ).execute()
             ok += len(batch)
         except Exception as e:
-            logger.error(f"EMLURB upsert batch failed: {e}")
             err += len(batch)
+            if not first_error:
+                first_error = f"{type(e).__name__}: {str(e)[:400]}"
+                logger.error(f"EMLURB upsert FALHOU no batch {i}: {first_error}")
+                logger.error(f"Sample row: {batch[0]}")
 
     duration = time.time() - start
-    _log_import("emlurb_156", ok, err, duration)
-    return {"ok": ok, "err": err, "duration_s": round(duration, 2)}
+    error_msg = first_error if err > 0 else None
+    _log_import("emlurb_156", ok, err, duration, error_msg)
+    return {"ok": ok, "err": err, "duration_s": round(duration, 2), "error": error_msg}
 
 
-async def import_defesa_civil() -> dict:
-    """Importa registros de atendimento da Defesa Civil do Recife."""
+async def import_defesa_civil(mvp_only: bool = True) -> dict:
+    """
+    Importa atendimentos da Defesa Civil do Recife.
+    Schema real: Regional, Data, Solicitacao, Endereco, Bairro,
+                 Grau_de_Risco, Tipo_da_Acao. Sem lat/lon.
+    Delimitador: ;
+    Se mvp_only=True, mantém só bairros centrais.
+    """
     source_cfg = SOURCES["defesa_civil"]
     start = time.time()
     ok = err = 0
+    first_error: Optional[str] = None
 
-    resource_url = await _discover_resource_url(source_cfg.ckan_slug, source_cfg.format)
+    resource_url = await _pick_latest_resource_url(source_cfg.ckan_slug, "CSV")
     if not resource_url:
-        msg = f"Fonte defesa_civil indisponível: {source_cfg.ckan_slug}"
+        msg = "defesa_civil: CSV não encontrado"
         logger.warning(msg)
         _log_import("defesa_civil", 0, 0, time.time() - start, msg)
         return {"ok": 0, "err": 0, "error": msg}
 
     try:
-        rows_raw = await _fetch_csv(resource_url, source_cfg.encoding)
+        rows_raw = await _fetch_csv(resource_url, encoding="utf-8")
+        logger.info(f"Defesa Civil CSV: {len(rows_raw)} linhas")
     except Exception as e:
         _log_import("defesa_civil", 0, 1, time.time() - start, str(e))
         return {"ok": 0, "err": 1, "error": str(e)}
 
-    def _col(row, *keys, default=None):
-        for k in keys:
-            for rk, rv in row.items():
-                if rk.lower().strip() == k.lower():
-                    return rv or default
-        return default
-
     rows = []
-    for raw in rows_raw:
+    for idx, raw in enumerate(rows_raw):
         try:
-            stype = _col(raw, "tipo_atendimento", "tipo", "natureza", default="")
+            solicitacao = _col(raw, "Solicitacao", "solicitacao", "Tipo_da_Acao", default="")
+            ocorrencia = _col(raw, "Ocorrencia", "ocorrencia", default="")
+            descricao = ocorrencia or solicitacao
+            bairro = (_col(raw, "Bairro", "bairro", default="") or "").strip()
+            data = _col(raw, "Data", "data", "Data_da_Acao", default="")
+
+            ext_id = f"dc-{idx}-{bairro}-{data}"[:120]
+
             rows.append({
-                "external_id": _col(raw, "protocolo", "id", "numero"),
-                "source": "defesa_civil",
-                "agency": "Defesa Civil do Recife",
-                "service_type": stype,
-                "category": _normalize_category(stype, source_cfg.category_map),
-                "status": _col(raw, "status", "situacao", default=""),
-                "description": _col(raw, "descricao", "obs", "observacao", default=""),
-                "neighborhood": _col(raw, "bairro", default=""),
-                "street_name": _col(raw, "logradouro", "endereco", default=""),
-                "lat": _safe_float(_col(raw, "lat", "latitude")),
-                "lon": _safe_float(_col(raw, "lon", "longitude")),
-                "opened_at": _safe_date(_col(raw, "data", "data_ocorrencia", "data_abertura")),
-                "raw": {k: v for k, v in raw.items() if v not in (None, "", "null")},
+                "external_id":  ext_id,
+                "source":       "defesa_civil",
+                "agency":       "Defesa Civil do Recife",
+                "service_type": (solicitacao or "")[:200] or None,
+                "category":     _normalize_category(descricao, source_cfg.category_map),
+                "status":       (_col(raw, "Tipo_da_Acao", "tipo_acao", default="") or "")[:80] or None,
+                "description":  (descricao or "Atendimento Defesa Civil")[:500],
+                "neighborhood": bairro or None,
+                "rpa":          None,
+                "street_name":  (_col(raw, "Endereco", "endereco", default="") or "").strip()[:200] or None,
+                "lat":          None,
+                "lon":          None,
+                "opened_at":    _safe_date(data),
+                "raw":          None,
             })
         except Exception as e:
-            logger.debug(f"Defesa Civil row error: {e}")
+            logger.debug(f"Defesa Civil row {idx} error: {e}")
             err += 1
+
+    if mvp_only:
+        before = len(rows)
+        rows = _filter_mvp(rows, "neighborhood")
+        logger.info(f"Defesa Civil MVP filter: {len(rows)} de {before}")
+
+    logger.info(f"Defesa Civil normalizado: {len(rows)} válidas / {err} erros de parse")
 
     client = _get_client()
     for i in range(0, len(rows), _BATCH_SIZE):
@@ -299,39 +406,37 @@ async def import_defesa_civil() -> dict:
             ).execute()
             ok += len(batch)
         except Exception as e:
-            logger.error(f"Defesa Civil upsert failed: {e}")
             err += len(batch)
+            if not first_error:
+                first_error = f"{type(e).__name__}: {str(e)[:400]}"
+                logger.error(f"Defesa Civil upsert FALHOU no batch {i}: {first_error}")
+                logger.error(f"Sample row: {batch[0]}")
 
     duration = time.time() - start
-    _log_import("defesa_civil", ok, err, duration)
-    return {"ok": ok, "err": err, "duration_s": round(duration, 2)}
+    error_msg = first_error if err > 0 else None
+    _log_import("defesa_civil", ok, err, duration, error_msg)
+    return {"ok": ok, "err": err, "duration_s": round(duration, 2), "error": error_msg}
 
 
 async def import_public_lighting_posts() -> dict:
-    """Importa catálogo de postes de iluminação pública."""
+    """Importa catálogo de postes de iluminação pública (EMLURB)."""
     source_cfg = SOURCES["postes_iluminacao"]
     start = time.time()
     ok = err = 0
 
-    resource_url = await _discover_resource_url(source_cfg.ckan_slug, source_cfg.format)
+    resource_url = await _pick_latest_resource_url(source_cfg.ckan_slug, "CSV")
     if not resource_url:
-        msg = f"Fonte postes_iluminacao indisponível"
+        msg = f"postes_iluminacao: CSV não encontrado"
         logger.warning(msg)
         _log_import("postes_iluminacao", 0, 0, time.time() - start, msg)
         return {"ok": 0, "err": 0, "error": msg}
 
     try:
-        rows_raw = await _fetch_csv(resource_url, source_cfg.encoding)
+        rows_raw = await _fetch_csv(resource_url, encoding="utf-8")
+        logger.info(f"Postes CSV: {len(rows_raw)} linhas")
     except Exception as e:
         _log_import("postes_iluminacao", 0, 1, time.time() - start, str(e))
         return {"ok": 0, "err": 1, "error": str(e)}
-
-    def _col(row, *keys, default=None):
-        for k in keys:
-            for rk, rv in row.items():
-                if rk.lower().strip() == k.lower():
-                    return rv or default
-        return default
 
     rows = []
     for raw in rows_raw:
@@ -366,73 +471,19 @@ async def import_public_lighting_posts() -> dict:
     return {"ok": ok, "err": err, "duration_s": round(duration, 2)}
 
 
-async def import_roads() -> dict:
-    """Importa trechos de logradouros por bairro."""
-    source_cfg = SOURCES["logradouros"]
-    start = time.time()
-    ok = err = 0
-
-    resource_url = await _discover_resource_url(source_cfg.ckan_slug, source_cfg.format)
-    if not resource_url:
-        msg = "Fonte logradouros indisponível"
-        logger.warning(msg)
-        _log_import("logradouros", 0, 0, time.time() - start, msg)
-        return {"ok": 0, "err": 0, "error": msg}
-
-    try:
-        rows_raw = await _fetch_csv(resource_url, source_cfg.encoding)
-    except Exception as e:
-        _log_import("logradouros", 0, 1, time.time() - start, str(e))
-        return {"ok": 0, "err": 1, "error": str(e)}
-
-    def _col(row, *keys, default=None):
-        for k in keys:
-            for rk, rv in row.items():
-                if rk.lower().strip() == k.lower():
-                    return rv or default
-        return default
-
-    rows = []
-    for raw in rows_raw:
-        try:
-            rows.append({
-                "name": _col(raw, "nome_logradouro", "logradouro", "nome", default=""),
-                "neighborhood": _col(raw, "bairro", "nome_bairro", default=""),
-                "rpa": _col(raw, "rpa", "regiao", default=""),
-                "pavement_type": _col(raw, "tipo_pavimento", "pavimento", default=""),
-                "source": "logradouros_recife",
-                "raw": {k: v for k, v in raw.items() if v not in (None, "", "null")},
-            })
-        except Exception as e:
-            logger.debug(f"Road row error: {e}")
-            err += 1
-
-    client = _get_client()
-    for i in range(0, len(rows), _BATCH_SIZE):
-        batch = rows[i:i + _BATCH_SIZE]
-        try:
-            client.table("official_roads").insert(batch).execute()
-            ok += len(batch)
-        except Exception as e:
-            logger.error(f"Roads upsert failed: {e}")
-            err += len(batch)
-
-    duration = time.time() - start
-    _log_import("logradouros", ok, err, duration)
-    return {"ok": ok, "err": err, "duration_s": round(duration, 2)}
 
 
 async def import_all(sources: list[str] | None = None) -> dict:
     """
-    Roda todos os importadores (ou lista especificada).
-    Cada falha é registrada individualmente sem parar os demais.
+    Roda os importadores essenciais. Postes opcional — pode ser muito grande
+    pro MVP. Default: bairros + emlurb 156 + defesa civil, todos com filtro
+    MVP (bairros centrais).
     """
     all_sources = {
         "neighborhoods": import_neighborhoods,
         "emlurb_156":    import_emlurb_156,
         "defesa_civil":  import_defesa_civil,
-        "postes":        import_public_lighting_posts,
-        "roads":         import_roads,
+        # "postes":      import_public_lighting_posts,  # 200k+ rows, opt-in
     }
     to_run = {k: v for k, v in all_sources.items() if sources is None or k in sources}
 

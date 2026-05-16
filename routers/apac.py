@@ -11,6 +11,25 @@ from services.apac_official import RMR_BBOX, fetch_cemaden, fetch_meteorologia24
 router = APIRouter()
 
 
+def _title_case_city(raw) -> str | None:
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    if not s.isupper():
+        return s
+    parts = []
+    for w in s.split():
+        if w.lower() in ("de", "da", "do", "das", "dos", "e"):
+            parts.append(w.lower())
+        else:
+            parts.append(w.title())
+    if parts and parts[0].lower() in ("de", "da", "do", "das", "dos"):
+        parts[0] = parts[0].title()
+    return " ".join(parts)
+
+
 @router.get("/api/apac/boletim")
 async def get_apac_boletim():
     """
@@ -47,6 +66,7 @@ async def get_apac_boletim():
         nivel, titulo = "SEGURO", "Sem chuva expressiva na RMR no momento"
 
     top_stations = sorted(rmr, key=lambda s: -(s.rain_mm or 0))[:5]
+    chovendo = [s for s in top_stations if (s.rain_mm or 0) >= 0.5]
 
     return {
         "boletim": {
@@ -56,8 +76,15 @@ async def get_apac_boletim():
             "afeta_recife": True,
             "max_chuva_mm":  round(max_rain, 1),
             "estacoes":      [
-                {"nome": s.name, "chuva_mm": s.rain_mm, "lat": s.lat, "lon": s.lon}
-                for s in top_stations
+                {
+                    "nome": s.name,
+                    "cidade": _title_case_city(s.municipio),
+                    "chuva_mm": s.rain_mm,
+                    "mm": s.rain_mm,
+                    "lat": s.lat,
+                    "lon": s.lon,
+                }
+                for s in chovendo
             ],
             "coletado_em":   max(s.captured_at for s in rmr),
         }

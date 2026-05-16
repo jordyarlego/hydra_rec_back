@@ -22,6 +22,26 @@ _TZ_RECIFE = ZoneInfo("America/Recife")
 _STALE_AFTER_S = 30 * 60  # 30 min
 
 
+def _format_city(raw) -> Optional[str]:
+    """Município em title case. 'PAULISTA' → 'Paulista'."""
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    if s.isupper():
+        parts = []
+        for w in s.split():
+            if w.lower() in ("de", "da", "do", "das", "dos", "e"):
+                parts.append(w.lower())
+            else:
+                parts.append(w.title())
+        if parts and parts[0].lower() in ("de", "da", "do", "das", "dos"):
+            parts[0] = parts[0].title()
+        return " ".join(parts)
+    return s
+
+
 # ── Classificação de chuva ───────────────────────────────────────────────
 
 def classify_rain(rain_1h_mm: Optional[float]) -> tuple[str, str]:
@@ -88,11 +108,20 @@ async def apac_alert() -> Optional[dict]:
         else:                nivel, titulo = "SEGURO",   "Sem chuva expressiva"
 
         top = sorted(rmr, key=lambda s: -(s.rain_mm or 0))[:3]
+        # Só inclui estações com chuva real no banner
+        chovendo = [s for s in top if (s.rain_mm or 0) >= 0.5]
         return {
             "nivel":        nivel,
             "titulo":       titulo,
             "max_mm":       round(max_rain, 1),
-            "estacoes":     [{"nome": s.name, "mm": s.rain_mm} for s in top],
+            "estacoes":     [
+                {
+                    "nome": s.name,
+                    "cidade": _format_city(s.municipio),
+                    "mm": s.rain_mm,
+                }
+                for s in chovendo
+            ],
             "coletado_em":  max(s.captured_at for s in rmr),
         }
     except Exception as e:
@@ -112,7 +141,7 @@ def _haversine_m(lat1, lon1, lat2, lon2):
 
 
 async def nearest_rmr_stations(lat: float, lon: float, limit: int = 4, max_km: float = 50) -> list[dict]:
-    """Pluviômetros CEMADEN mais próximos do ponto. Inclui distância em km."""
+    """Pluviômetros mais próximos do ponto. Inclui distância em km e município."""
     try:
         from services.apac_official import fetch_cemaden, RMR_BBOX
         stations = await fetch_cemaden()
@@ -130,6 +159,7 @@ async def nearest_rmr_stations(lat: float, lon: float, limit: int = 4, max_km: f
         return [
             {
                 "name":        s.name,
+                "city":        _format_city(s.municipio),
                 "rain_mm":     s.rain_mm,
                 "lat":         s.lat,
                 "lon":         s.lon,
@@ -143,19 +173,21 @@ async def nearest_rmr_stations(lat: float, lon: float, limit: int = 4, max_km: f
         return []
 
 
-async def top_rmr_stations(limit: int = 5) -> list[dict]:
-    """Top pluviômetros RMR por intensidade de chuva (não por distância)."""
+async def top_rmr_stations(limit: int = 5, min_rain_mm: float = 0.5) -> list[dict]:
+    """Top pluviômetros por chuva acima de min_rain_mm. Inclui município."""
     try:
         from services.apac_official import fetch_cemaden, RMR_BBOX
         stations = await fetch_cemaden()
         rmr = [
             s for s in stations
             if RMR_BBOX[0] <= s.lat <= RMR_BBOX[1] and RMR_BBOX[2] <= s.lon <= RMR_BBOX[3]
+            and (s.rain_mm or 0) >= min_rain_mm
         ]
         top = sorted(rmr, key=lambda s: -(s.rain_mm or 0))[:limit]
         return [
             {
                 "name":     s.name,
+                "city":     (s.municipio or "").strip() or None,
                 "rain_mm":  s.rain_mm,
                 "lat":      s.lat,
                 "lon":      s.lon,

@@ -32,9 +32,16 @@ MAX_BYTES = 5 * 1024 * 1024
 
 _ALLOWED_MIMES = {
     "image/jpeg": ("jpg", "JPEG"),
-    "image/jpg":  ("jpg", "JPEG"),
     "image/png":  ("png", "PNG"),
     "image/webp": ("webp", "WEBP"),
+}
+
+# Aliases não-padrão → mime canônico (Supabase só aceita o canônico)
+_MIME_ALIASES = {
+    "image/jpg":         "image/jpeg",
+    "image/pjpeg":       "image/jpeg",
+    "image/x-png":       "image/png",
+    "application/octet-stream": "image/jpeg",  # browsers às vezes mandam isso
 }
 
 # Limite de dimensão para não estourar memória ao reencodar
@@ -73,44 +80,54 @@ def _strip_and_normalize(data: bytes, mime: str) -> tuple[bytes, str, str]:
 
 def upload_photo(data: bytes, mime: str) -> str:
     """
-    Faz upload e retorna URL pública (https://...).
-    Levanta PhotoError em validação; outros erros propagam.
+    Faz upload e retorna URL pública.
+    Levanta PhotoError se algo falhar — NÃO retorna URL inválida silenciosamente.
     """
     if not data:
         raise PhotoError("Arquivo vazio.")
     if len(data) > MAX_BYTES:
         raise PhotoError(f"Arquivo maior que {MAX_BYTES // (1024*1024)}MB.")
-    mime = (mime or "").lower().split(";")[0].strip()
-    if mime not in _ALLOWED_MIMES:
-        raise PhotoError(f"Tipo não suportado: {mime}. Use JPEG, PNG ou WEBP.")
 
-    body, ext, _ = _strip_and_normalize(data, mime)
+    raw_mime = (mime or "").lower().split(";")[0].strip()
+    # Normaliza aliases não-padrão (image/jpg → image/jpeg)
+    canonical_mime = _MIME_ALIASES.get(raw_mime, raw_mime)
+    if canonical_mime not in _ALLOWED_MIMES:
+        raise PhotoError(f"Tipo não suportado: {raw_mime}. Use JPEG, PNG ou WEBP.")
+
+    body, ext, pil_format = _strip_and_normalize(data, canonical_mime)
+    # Após normalização, o body sempre está no formato canônico
+    upload_mime = f"image/{ext if ext != 'jpg' else 'jpeg'}"
 
     name = f"reports/{uuid.uuid4().hex}.{ext}"
     client = get_service_client()
+
     try:
         client.storage.from_(_BUCKET).upload(
             path=name,
             file=body,
-            file_options={"content-type": f"image/{ext}", "upsert": "false"},
+            file_options={"content-type": upload_mime, "upsert": "false"},
         )
+        logger.info(f"✅ storage.upload OK: {name} ({len(body)} bytes, {upload_mime})")
     except Exception as e:
-        # Algumas versões do SDK retornam erro mesmo no sucesso quando upsert false;
-        # validamos pegando a URL na sequência.
-        logger.debug(f"storage.upload exception (pode ser benigna): {e}")
+        # FALHA — não retorna URL, levanta PhotoError
+        logger.error(f"❌ storage.upload FAILED for {name}: {type(e).__name__}: {e}")
+        raise PhotoError(f"Upload Supabase falhou: {e}") from e
 
     try:
         public = client.storage.from_(_BUCKET).get_public_url(name)
     except Exception as e:
         logger.error(f"storage.get_public_url failed: {e}")
-        raise
+        raise PhotoError(f"URL pública indisponível: {e}") from e
 
     if isinstance(public, dict):
         url = public.get("publicUrl") or public.get("publicURL")
     else:
         url = str(public)
+    if url and url.endswith("?"):
+        url = url[:-1]
     if not url:
         raise PhotoError("Falha ao gerar URL pública da foto.")
+    logger.info(f"photo public URL: {url}")
     return url
 
 

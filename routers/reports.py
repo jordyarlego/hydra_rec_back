@@ -71,14 +71,20 @@ async def _create_report_core(
 
     # Lista de colunas V3 que devem ser dropadas caso o schema ainda seja V2
     v3_only_cols = ("weather_snapshot_id", "photo_url")
+    photo_persisted = True
 
     try:
         res = client.table("reports").insert(row).execute()
     except Exception as e:
         msg = str(e).lower()
         if any(col in msg for col in v3_only_cols) or "column" in msg or "42703" in msg:
-            logger.warning("reports insert: schema V3 ausente; dropando colunas novas e re-tentando")
+            logger.error(
+                "🚨 SCHEMA V3 AUSENTE no Supabase — coluna photo_url/weather_snapshot_id não existe.\n"
+                "    Aplique back_end_hydrarec/migrations/v3_civic_reports.sql no SQL Editor.\n"
+                "    Por enquanto a foto NÃO está sendo persistida no banco (apenas no Storage)."
+            )
             stripped = {k: v for k, v in row.items() if k not in v3_only_cols}
+            photo_persisted = False
             try:
                 res = client.table("reports").insert(stripped).execute()
             except Exception as e2:
@@ -95,14 +101,18 @@ async def _create_report_core(
 
     # Cruzamento com dados oficiais (fire-and-forget)
     asyncio.create_task(_cross_official(report_id))
-    if photo_url:
+    if photo_url and photo_persisted:
         asyncio.create_task(_run_ai_pipeline(report_id, photo_url, weather_snapshot))
+    elif photo_url and not photo_persisted:
+        logger.warning(f"AI pipeline pulado para {report_id} — schema V3 ausente.")
 
     return {
         "id": report_id,
         "status": "criado",
         "weather": weather_snapshot,
-        "photo_url": photo_url,
+        "photo_url": photo_url if photo_persisted else None,
+        "photo_persisted": photo_persisted,
+        "schema_warning": None if photo_persisted else "Migration V3 não aplicada — foto perdida.",
     }
 
 
@@ -123,10 +133,18 @@ async def _run_ai_pipeline(report_id: str, photo_url: str, weather_snapshot: Opt
 
         vision = await describe_photo(photo_url)
         client = get_service_client()
-        client.table("reports").update({
+        vision_update = {
             "photo_ai_description": vision.get("description"),
             "photo_ai_confidence": vision.get("confidence"),
-        }).eq("id", report_id).execute()
+        }
+        # is_urban_problem só persiste se a coluna existir (V4 aplicada)
+        try:
+            update_with_urban = dict(vision_update)
+            update_with_urban["photo_ai_is_urban_problem"] = vision.get("is_urban_problem")
+            client.table("reports").update(update_with_urban).eq("id", report_id).execute()
+        except Exception as col_err:
+            logger.warning("photo_ai_is_urban_problem column missing (V4 not applied?): %s", col_err)
+            client.table("reports").update(vision_update).eq("id", report_id).execute()
 
         res = client.table("reports").select("*").eq("id", report_id).execute()
         if not res.data:
@@ -173,19 +191,30 @@ async def create_report_with_photo(
     """
     photo_url: Optional[str] = None
 
+    # Log do que chegou pra diagnóstico
+    logger.info(
+        f"create_report_with_photo: photo={'present' if photo else 'None'} "
+        f"filename={getattr(photo, 'filename', None)} "
+        f"content_type={getattr(photo, 'content_type', None)}"
+    )
+
     if photo is not None and photo.filename:
-        # Pre-check Content-Length antes de ler tudo na memória
         content_length = request.headers.get("content-length")
         if content_length and int(content_length) > PHOTO_MAX_BYTES + 4096:
             raise HTTPException(status_code=413, detail=f"Foto maior que {PHOTO_MAX_BYTES // (1024*1024)}MB.")
         data = await photo.read()
+        logger.info(f"photo bytes lidos: {len(data)} bytes")
         try:
             photo_url = upload_photo(data, photo.content_type or "image/jpeg")
+            logger.info(f"✅ photo upload OK → {photo_url}")
         except PhotoError as e:
+            logger.error(f"❌ PhotoError no upload: {e}")
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:
-            logger.error(f"photo upload failed: {e}")
-            raise HTTPException(status_code=500, detail="Falha ao enviar foto.")
+            logger.error(f"❌ photo upload exception: {type(e).__name__}: {e}")
+            raise HTTPException(status_code=500, detail=f"Falha ao enviar foto: {type(e).__name__}")
+    else:
+        logger.warning("⚠️  /api/reports/with-photo chamado SEM foto (photo=None ou filename vazio)")
 
     return await _create_report_core(
         request=request,
@@ -201,6 +230,13 @@ async def create_report_with_photo(
     )
 
 
+_NEARBY_FIELDS_V3 = (
+    "id,type,severity,lat,lon,bairro,description,confirmed_count,created_at,"
+    "photo_url,likes_up,likes_down,status,ai_validation_score"
+)
+_NEARBY_FIELDS_V2 = "id,type,severity,lat,lon,bairro,description,confirmed_count,created_at"
+
+
 @router.get("/api/reports/nearby")
 async def get_nearby_reports(lat: float, lon: float, radius: float = 2000):
     from services.supabase_client import get_client
@@ -208,15 +244,25 @@ async def get_nearby_reports(lat: float, lon: float, radius: float = 2000):
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
     delta_lat = radius / 111000
     delta_lon = radius / (111000 * abs(math.cos(math.radians(lat))) or 1)
+
+    def _query(fields: str):
+        return (client.table("reports")
+                .select(fields)
+                .eq("resolved", False)
+                .gte("created_at", cutoff)
+                .gte("lat", lat - delta_lat).lte("lat", lat + delta_lat)
+                .gte("lon", lon - delta_lon).lte("lon", lon + delta_lon)
+                .order("created_at", desc=True)
+                .execute())
     try:
-        res = (client.table("reports")
-               .select("id,type,severity,lat,lon,bairro,description,confirmed_count,created_at")
-               .eq("resolved", False)
-               .gte("created_at", cutoff)
-               .gte("lat", lat - delta_lat).lte("lat", lat + delta_lat)
-               .gte("lon", lon - delta_lon).lte("lon", lon + delta_lon)
-               .order("created_at", desc=True)
-               .execute())
+        try:
+            res = _query(_NEARBY_FIELDS_V3)
+        except Exception as e:
+            msg = str(e).lower()
+            if "column" in msg or "does not exist" in msg or "42703" in msg:
+                res = _query(_NEARBY_FIELDS_V2)
+            else:
+                raise
         reports = [r for r in (res.data or []) if _haversine(lat, lon, r["lat"], r["lon"]) <= radius]
     except Exception as e:
         logger.error(f"nearby reports fetch failed: {e}")
