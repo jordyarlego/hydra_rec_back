@@ -44,6 +44,7 @@ def _fallback_from_text(text: str = "", reason: str = "no_ai") -> dict[str, Any]
         "suggested_type": kind,
         "confidence": (0.35 if kind else 0.0),
         "is_urban_problem": None,
+        "severity_hint": None,
         "ai_used": False,
         "fallback_reason": reason,
     }
@@ -71,11 +72,16 @@ def _parse_jsonish(raw: str) -> dict[str, Any]:
     else:
         is_urban = None
 
+    sev = (data.get("severity_hint") or "").strip().lower()
+    if sev not in ("grave", "moderado", "leve", "desconhecido"):
+        sev = None
+
     return {
         "description": str(data.get("description") or data.get("descricao") or "").strip()[:300] or None,
         "suggested_type": kind,
         "confidence": max(0.0, min(float(data.get("confidence", 0.5)), 1.0)),
         "is_urban_problem": is_urban,
+        "severity_hint": sev,
     }
 
 
@@ -97,10 +103,19 @@ _VISION_PROMPT = (
     "alagamento, deslizamento, queda_arvore, via_intransitavel, poste_caido, "
     "buraco, lixo, iluminacao, outro. Se NÃO for problema urbano, use 'outro'.\n"
     "3. description: NO MÁXIMO 8 PALAVRAS descrevendo o que você vê.\n"
-    "4. confidence: 0.0-1.0 do quanto você está seguro da classificação.\n\n"
+    "4. confidence: 0.0-1.0 do quanto você está seguro da classificação.\n"
+    "5. severity_hint: gravidade VISUAL do problema:\n"
+    "   - 'grave': risco imediato (cratera grande, alagamento na altura do joelho,\n"
+    "     árvore em fio elétrico, deslizamento ativo, via totalmente bloqueada);\n"
+    "   - 'moderado': atrapalha mas tem como contornar (buraco médio,\n"
+    "     lixo acumulado, iluminação apagada em via comum);\n"
+    "   - 'leve': incômodo sem risco direto (pequeno entulho, lâmpada queimada\n"
+    "     em rua iluminada por outras);\n"
+    "   - 'desconhecido': não consegue avaliar pela foto.\n\n"
     "Responda APENAS o JSON sem texto antes ou depois:\n"
     "{\"is_urban_problem\":true|false,\"description\":\"frase curta\","
-    "\"type\":\"categoria\",\"confidence\":0.0-1.0}"
+    "\"type\":\"categoria\",\"confidence\":0.0-1.0,"
+    "\"severity_hint\":\"grave|moderado|leve|desconhecido\"}"
 )
 
 

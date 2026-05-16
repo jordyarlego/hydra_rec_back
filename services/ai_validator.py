@@ -7,29 +7,39 @@ logger = logging.getLogger(__name__)
 
 
 # Thresholds (alinhados ao spec docs/superpowers/specs/2026-05-16-triagem-v2-design.md)
+# Ajuste ciclo 2 (item 12): mais permissivo no auto_validado — buracos, lixo
+# e iluminação não eram auto-validados porque exigiam priority>=alta. Agora
+# basta score alto + foto urbana + sem reincidência suspeita.
 GATE_NOT_URBAN_MAX_SCORE = 0.10        # foto explicitamente não-urbana
 GATE_LOW_CONFIDENCE_MAX_SCORE = 0.15   # foto com confidence < threshold
 GATE_LOW_CONFIDENCE_THRESHOLD = 0.40
 
 BUCKET_FILTRADO_MAX = 0.20             # < 20% -> filtrado
-BUCKET_AUTOVAL_MIN = 0.75              # >= 75% + prioridade alta + sem reincidência -> auto-validado
+BUCKET_AUTOVAL_MIN = 0.70              # >= 70% (era 0.75) -> elegível auto-validado
 
 
-def _bucket_from_score(score: float, priority: str | None = None, recurrence: int = 0) -> str:
+def _bucket_from_score(
+    score: float,
+    priority: str | None = None,
+    recurrence: int = 0,
+    has_urban_photo: bool = False,
+) -> str:
     """Classifica o report no bucket de triagem.
 
     - filtrado:       score < 0.20 (provavel spam/foto invalida)
-    - auto_validado:  score >= 0.75 + prioridade urgente/alta + sem reincidência
+    - auto_validado:  score >= 0.70 E (priority alta/urgente OU has_urban_photo=True)
+                      E sem reincidência cravada (recurrence == 0)
     - revisar:        zona cinzenta — admin precisa decidir
     """
     if score < BUCKET_FILTRADO_MAX:
         return "filtrado"
-    if (
-        score >= BUCKET_AUTOVAL_MIN
-        and priority in ("alta", "urgente")
-        and recurrence == 0
-    ):
-        return "auto_validado"
+    if score >= BUCKET_AUTOVAL_MIN and recurrence == 0:
+        if priority in ("alta", "urgente"):
+            return "auto_validado"
+        # Permissivo: foto urbana clara (gate passou) + score alto = auto-validado
+        # mesmo em prioridade média (ex.: buraco grande na rua)
+        if has_urban_photo and score >= 0.78:
+            return "auto_validado"
     return "revisar"
 
 
@@ -113,11 +123,12 @@ def validate_report(report: dict[str, Any]) -> dict[str, Any]:
     score = max(0.0, min(round(score, 2), 1.0))
 
     # Bucket hint usa só o score por padrão; quem chama pode refinar com priority/recurrence
+    has_urban_photo = bool(has_photo and is_urban is True)
     return {
         "score": score,
         "notes": " ".join(notes) or "Sem evidência adicional além dos dados básicos do report.",
         "flags": flags,
-        "bucket_hint": _bucket_from_score(score),
+        "bucket_hint": _bucket_from_score(score, has_urban_photo=has_urban_photo),
     }
 
 
@@ -131,7 +142,13 @@ async def persist_validation(report_id: str, report: dict[str, Any]) -> dict[str
     priority_obj = report.get("priority_result") or {}
     priority = priority_obj.get("priority") if isinstance(priority_obj, dict) else None
     recurrence = int((report.get("recurrence_score") or 0))
-    bucket = _bucket_from_score(result["score"], priority=priority, recurrence=recurrence)
+    has_urban_photo = bool(report.get("photo_url") and report.get("photo_ai_is_urban_problem") is True)
+    bucket = _bucket_from_score(
+        result["score"],
+        priority=priority,
+        recurrence=recurrence,
+        has_urban_photo=has_urban_photo,
+    )
     result["bucket"] = bucket
 
     from services.supabase_client import get_service_client

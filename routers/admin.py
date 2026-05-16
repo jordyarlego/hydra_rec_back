@@ -15,6 +15,8 @@ from services.dispatch_router import (
     auto_title,
     sla_deadline,
     find_duplicates,
+    build_dispatch_email,
+    org_contact,
 )
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -90,6 +92,81 @@ async def official_import_status(_admin=Depends(require_admin)):
         "sources":    _import_state["sources"],
         "result":     _import_state["result"],
     }
+
+
+@router.get("/official-data/coverage")
+async def official_data_coverage(_admin=Depends(require_admin)):
+    """
+    Mostra o que está mapeado AGORA no banco — pra admin saber transparente
+    quais bases foram importadas com sucesso e quais bairros estão cobertos.
+
+    Esse painel evita a frustração de "Importar agora" sem saber se deu certo.
+    """
+    out: dict = {
+        "neighborhoods": {"count": 0, "sample": [], "rpas": []},
+        "official_requests": {"total": 0, "by_category": [], "by_neighborhood_top10": [], "last_opened_at": None},
+        "roads": {"count": 0},
+        "import_logs": [],
+    }
+
+    db = _db()
+
+    # 1. Bairros oficiais (point-in-polygon usado pra detecção)
+    try:
+        res = db.table("official_neighborhoods").select("name,rpa").limit(200).execute()
+        rows = res.data or []
+        out["neighborhoods"]["count"] = len(rows)
+        out["neighborhoods"]["sample"] = sorted([r["name"] for r in rows[:20] if r.get("name")])
+        rpas = sorted({r.get("rpa") for r in rows if r.get("rpa")})
+        out["neighborhoods"]["rpas"] = list(rpas)
+    except Exception as e:
+        out["neighborhoods"]["error"] = str(e)
+
+    # 2. Chamados oficiais importados (EMLURB 156, Defesa Civil)
+    try:
+        res = db.table("official_service_requests").select(
+            "id,category,neighborhood,opened_at"
+        ).order("opened_at", desc=True).limit(2000).execute()
+        rows = res.data or []
+        out["official_requests"]["total"] = len(rows)
+        if rows:
+            out["official_requests"]["last_opened_at"] = rows[0].get("opened_at")
+        # Agregações
+        by_cat: dict = {}
+        by_nb: dict = {}
+        for r in rows:
+            c = r.get("category") or "outro"
+            n = r.get("neighborhood") or "Desconhecido"
+            by_cat[c] = by_cat.get(c, 0) + 1
+            by_nb[n] = by_nb.get(n, 0) + 1
+        out["official_requests"]["by_category"] = sorted(
+            [{"category": k, "count": v} for k, v in by_cat.items()],
+            key=lambda x: -x["count"],
+        )[:10]
+        out["official_requests"]["by_neighborhood_top10"] = sorted(
+            [{"neighborhood": k, "count": v} for k, v in by_nb.items()],
+            key=lambda x: -x["count"],
+        )[:10]
+    except Exception as e:
+        out["official_requests"]["error"] = str(e)
+
+    # 3. Vias (logradouros)
+    try:
+        res = db.table("official_roads").select("id", count="exact").limit(1).execute()
+        out["roads"]["count"] = res.count or 0
+    except Exception as e:
+        out["roads"]["error"] = str(e)
+
+    # 4. Logs das últimas importações
+    try:
+        res = db.table("official_import_log").select(
+            "source,started_at,finished_at,records_ok,records_err,duration_s"
+        ).order("started_at", desc=True).limit(10).execute()
+        out["import_logs"] = res.data or []
+    except Exception as e:
+        out["import_logs_error"] = str(e)
+
+    return out
 
 
 @router.get("/official-data/service-requests")
@@ -399,6 +476,40 @@ async def delete_report(report_id: str, admin=Depends(require_admin)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/reports/{report_id}/address")
+async def get_report_address(report_id: str, _admin=Depends(require_admin)):
+    """
+    Resolve endereço humano (rua, número, bairro) + pontos de referência
+    próximos para o report. Cache em memória 24h. Falha gracioso → null.
+    """
+    try:
+        res = _db().table("reports").select("id,lat,lon,bairro").eq("id", report_id).execute()
+        if not res.data:
+            raise HTTPException(status_code=404, detail="Report não encontrado.")
+        r = res.data[0]
+        lat, lon = r.get("lat"), r.get("lon")
+        if lat is None or lon is None:
+            return {"address": None, "landmarks": [], "reason": "Sem coordenadas no report."}
+
+        from services.geocoding import reverse_geocode, nearby_landmarks
+        # roda em paralelo
+        import asyncio as _asyncio
+        addr, landmarks = await _asyncio.gather(
+            reverse_geocode(lat, lon),
+            nearby_landmarks(lat, lon, radius_m=200),
+            return_exceptions=True,
+        )
+        if isinstance(addr, Exception):
+            addr = {"source": "fallback", "full_address": None}
+        if isinstance(landmarks, Exception):
+            landmarks = []
+        return {"address": addr, "landmarks": landmarks}
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {"address": None, "landmarks": [], "error": str(e)}
+
+
 @router.get("/reports/{report_id}/duplicates")
 async def get_duplicates(report_id: str, _admin=Depends(require_admin)):
     """Retorna candidatos de duplicata (mesma categoria, raio 100m, últimas 24h)."""
@@ -671,6 +782,85 @@ async def update_ticket(ticket_id: str, payload: dict, admin=Depends(require_adm
             "diff": update,
         }).execute()
         return {"ok": True, "updated": update}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/tickets/{ticket_id}/dispatch-draft")
+async def ticket_dispatch_draft(ticket_id: str, _admin=Depends(require_admin)):
+    """
+    Gera um e-mail/SMS pré-formatado pra encaminhar o chamado ao órgão
+    responsável. Frontend pode abrir mailto: direto no cliente de e-mail
+    do admin OU copiar pra colar em outro canal.
+
+    NÃO envia nada automaticamente — só monta o conteúdo.
+    Integração real (API EMLURB 156) é trabalho futuro; por ora o admin
+    aprova manualmente o despacho de cada chamado.
+    """
+    try:
+        t = _db().table("tickets").select("*").eq("id", ticket_id).execute()
+        if not t.data:
+            raise HTTPException(status_code=404, detail="Chamado não encontrado.")
+        ticket = t.data[0]
+
+        report = None
+        address = None
+        if ticket.get("report_id"):
+            r = _db().table("reports").select(
+                "id,bairro,type,lat,lon,description,photo_url"
+            ).eq("id", ticket["report_id"]).execute()
+            report = (r.data or [None])[0]
+            if report and report.get("lat") and report.get("lon"):
+                try:
+                    from services.geocoding import reverse_geocode
+                    address = await reverse_geocode(report["lat"], report["lon"])
+                except Exception:
+                    address = None
+
+        draft = build_dispatch_email(ticket, report=report, address=address)
+        return draft
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/tickets/{ticket_id}/mark-dispatched")
+async def mark_ticket_dispatched(ticket_id: str, payload: dict | None = None, admin=Depends(require_admin)):
+    """
+    Registra que o admin encaminhou o chamado externamente (por e-mail,
+    telefone, etc). Move kanban_state pra em_atendimento, salva nota
+    de auditoria com canal usado.
+
+    Body opcional: {channel: "EMLURB 156" | ..., notes: "...", external_ref: "..."}.
+    """
+    payload = payload or {}
+    channel = (payload.get("channel") or "manual").strip()[:120]
+    external_ref = (payload.get("external_ref") or "").strip()[:120] or None
+    notes = (payload.get("notes") or "").strip()[:500] or None
+
+    try:
+        update = {"kanban_state": "em_atendimento"}
+        if external_ref:
+            update["external_ref"] = external_ref
+        if notes:
+            update["notes"] = notes
+        try:
+            _db().table("tickets").update(update).eq("id", ticket_id).execute()
+        except Exception as col_err:
+            logger.warning("mark_dispatched V4 cols fallback: %s", col_err)
+            safe = {k: v for k, v in update.items() if k != "kanban_state"}
+            if safe:
+                _db().table("tickets").update(safe).eq("id", ticket_id).execute()
+
+        _db().table("admin_audit").insert({
+            "user_id": admin.get("sub"),
+            "action": "dispatch_external",
+            "target_table": "tickets",
+            "target_id": ticket_id,
+            "diff": {"channel": channel, "external_ref": external_ref},
+        }).execute()
+        return {"ok": True, "ticket_id": ticket_id, "channel": channel}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

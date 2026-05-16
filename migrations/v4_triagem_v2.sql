@@ -19,6 +19,21 @@ ALTER TABLE reports
   ADD COLUMN IF NOT EXISTS photo_ai_is_urban_problem BOOLEAN;
 
 ALTER TABLE reports
+  ADD COLUMN IF NOT EXISTS photo_ai_severity_hint TEXT;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'reports_severity_hint_check'
+  ) THEN
+    ALTER TABLE reports
+      ADD CONSTRAINT reports_severity_hint_check
+      CHECK (photo_ai_severity_hint IS NULL OR photo_ai_severity_hint IN
+        ('grave','moderado','leve','desconhecido'));
+  END IF;
+END $$;
+
+ALTER TABLE reports
   ADD COLUMN IF NOT EXISTS bucket TEXT;
 
 DO $$

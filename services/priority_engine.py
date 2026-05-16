@@ -117,6 +117,18 @@ def calculate_priority(
             score -= 15
             reasons.append("IA detectou possível inconsistência no report")
 
+    # 4b. Severidade VISUAL inferida pela IA da foto
+    # Bumpa quando IA vê risco grave (cratera, alagamento profundo, fio caído)
+    # mesmo que o usuário tenha marcado severidade leve por engano.
+    sev_hint = report.get("photo_ai_severity_hint")
+    if sev_hint == "grave":
+        score += 18
+        reasons.append("IA identificou risco grave pela foto")
+    elif sev_hint == "moderado" and severidade == "leve":
+        # IA discorda pra cima — só corrige se user subestimou
+        score += 6
+        reasons.append("IA classificou como moderado pela foto")
+
     # 5. Clima APAC cruzado
     if weather_snapshot:
         rain_1h = weather_snapshot.get("rain_1h_mm") or 0

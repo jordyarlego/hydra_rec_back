@@ -39,6 +39,91 @@ ORG_LABELS: dict[str, str] = {
     "OUTRO":               "A definir",
 }
 
+# Canais de despacho. MVP: e-mail/telefone públicos do órgão.
+# Em produção, integrar com APIs reais (EMLURB 156, Defesa Civil 199, COMPESA 0800).
+# Placeholder — usuário deve confirmar os contatos certos pra cada órgão.
+ORG_CONTACTS: dict[str, dict[str, str]] = {
+    "EMLURB_DRENAGEM":     {"phone": "0800-281-1560", "email": "ouvidoria@emlurb.recife.pe.gov.br", "channel": "EMLURB 156"},
+    "EMLURB_ARBORIZACAO":  {"phone": "0800-281-1560", "email": "ouvidoria@emlurb.recife.pe.gov.br", "channel": "EMLURB 156"},
+    "EMLURB_PAVIMENTACAO": {"phone": "0800-281-1560", "email": "ouvidoria@emlurb.recife.pe.gov.br", "channel": "EMLURB 156"},
+    "EMLURB_LIMPEZA":      {"phone": "0800-281-1560", "email": "ouvidoria@emlurb.recife.pe.gov.br", "channel": "EMLURB 156"},
+    "CELPE":               {"phone": "116", "email": "atendimento@neoenergia.com", "channel": "Celpe 116"},
+    "DEFESA_CIVIL":        {"phone": "199", "email": "defesacivil@recife.pe.gov.br", "channel": "Defesa Civil 199"},
+    "OUTRO":               {"phone": "156", "email": "ouvidoria@recife.pe.gov.br", "channel": "Ouvidoria 156"},
+}
+
+
+def org_contact(org_key: str) -> dict[str, str]:
+    """Retorna canal de contato do órgão (e-mail, telefone, label)."""
+    return ORG_CONTACTS.get(org_key, ORG_CONTACTS["OUTRO"])
+
+
+def build_dispatch_email(ticket: dict, report: dict | None = None, address: dict | None = None) -> dict[str, str]:
+    """
+    Monta um e-mail/SMS pré-formatado pro despacho.
+
+    Retorna {to, subject, body, mailto, channel, phone}.
+    Frontend usa pra abrir cliente de e-mail nativo (mailto:) ou copiar.
+
+    Em produção: substituir por chamada real à API do órgão.
+    """
+    org = ticket.get("assigned_org") or "OUTRO"
+    contact = org_contact(org)
+    bairro = (ticket.get("bairro") or (report or {}).get("bairro") or "Recife").strip()
+    tipo = (ticket.get("type") or "outro")
+    title = ticket.get("notes") or auto_title(report or ticket, address or {})
+    prio = (ticket.get("priority") or "media").upper()
+
+    addr_str = ""
+    if address:
+        street = address.get("street")
+        number = address.get("number")
+        nb = address.get("neighborhood") or bairro
+        if street:
+            addr_str = f"{street}"
+            if number:
+                addr_str += f", {number}"
+            if nb:
+                addr_str += f" — {nb}"
+        elif address.get("full_address"):
+            addr_str = address["full_address"]
+
+    subject = f"[HydraRec · prioridade {prio}] {title}"
+    lines = [
+        f"Solicitação encaminhada pela plataforma HydraRec.",
+        "",
+        f"Tipo:        {CATEGORY_LABEL.get(tipo, tipo)}",
+        f"Prioridade:  {prio}",
+        f"Bairro:      {bairro}",
+    ]
+    if addr_str:
+        lines.append(f"Endereço:    {addr_str}")
+    lat, lon = ticket.get("lat") or (report or {}).get("lat"), ticket.get("lon") or (report or {}).get("lon")
+    if lat is not None and lon is not None:
+        lines.append(f"Coordenadas: {lat}, {lon}")
+        lines.append(f"Mapa:        https://www.google.com/maps?q={lat},{lon}")
+    if ticket.get("id"):
+        lines.append(f"Protocolo:   HR-{str(ticket['id'])[:8]}")
+    lines.extend([
+        "",
+        "Anexo: foto enviada pelo cidadão (acessível via link público).",
+        "",
+        "— Esta mensagem foi gerada automaticamente pela plataforma cívica HydraRec.",
+    ])
+    body = "\n".join(lines)
+
+    import urllib.parse as _u
+    mailto = f"mailto:{contact['email']}?subject={_u.quote(subject)}&body={_u.quote(body)}"
+
+    return {
+        "to": contact["email"],
+        "phone": contact["phone"],
+        "channel": contact["channel"],
+        "subject": subject,
+        "body": body,
+        "mailto": mailto,
+    }
+
 CATEGORY_LABEL: dict[str, str] = {
     "alagamento":        "Alagamento",
     "deslizamento":      "Deslizamento",

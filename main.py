@@ -57,9 +57,11 @@ async def startup():
 
     from workers.cron_alerts import start_cron
     from workers.ai_revalidation import start as start_ai_revalidation
+    from workers.ticket_lifecycle import start as start_ticket_lifecycle
     _background_tasks.extend([
         asyncio.create_task(start_cron(300)),
         asyncio.create_task(start_ai_revalidation(60)),
+        asyncio.create_task(start_ticket_lifecycle()),  # auto-close + monitora SLA
     ])
 
 

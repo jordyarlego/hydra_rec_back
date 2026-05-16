@@ -137,13 +137,14 @@ async def _run_ai_pipeline(report_id: str, photo_url: str, weather_snapshot: Opt
             "photo_ai_description": vision.get("description"),
             "photo_ai_confidence": vision.get("confidence"),
         }
-        # is_urban_problem só persiste se a coluna existir (V4 aplicada)
+        # is_urban_problem + severity_hint só persistem se as colunas existirem (V4)
         try:
-            update_with_urban = dict(vision_update)
-            update_with_urban["photo_ai_is_urban_problem"] = vision.get("is_urban_problem")
-            client.table("reports").update(update_with_urban).eq("id", report_id).execute()
+            update_with_v4 = dict(vision_update)
+            update_with_v4["photo_ai_is_urban_problem"] = vision.get("is_urban_problem")
+            update_with_v4["photo_ai_severity_hint"] = vision.get("severity_hint")
+            client.table("reports").update(update_with_v4).eq("id", report_id).execute()
         except Exception as col_err:
-            logger.warning("photo_ai_is_urban_problem column missing (V4 not applied?): %s", col_err)
+            logger.warning("V4 vision columns missing, fallback: %s", col_err)
             client.table("reports").update(vision_update).eq("id", report_id).execute()
 
         res = client.table("reports").select("*").eq("id", report_id).execute()
@@ -430,3 +431,36 @@ async def get_report(report_id: str):
 
     report["weather"] = weather
     return report
+
+
+@router.get("/api/reports/{report_id}/address")
+async def get_report_address_public(report_id: str):
+    """
+    Resolve endereço (rua, bairro, pontos de referência) do pin no mapa.
+    Endpoint público — usado pelo popup do mapa pra mostrar contexto local.
+    """
+    from services.supabase_client import get_client
+    client = get_client()
+    try:
+        res = client.table("reports").select("id,lat,lon,bairro").eq("id", report_id).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not res.data:
+        raise HTTPException(status_code=404, detail="Report não encontrado.")
+    r = res.data[0]
+    lat, lon = r.get("lat"), r.get("lon")
+    if lat is None or lon is None:
+        return {"address": None, "landmarks": [], "reason": "Sem coordenadas."}
+
+    from services.geocoding import reverse_geocode, nearby_landmarks
+    import asyncio as _a
+    addr, landmarks = await _a.gather(
+        reverse_geocode(lat, lon),
+        nearby_landmarks(lat, lon, radius_m=200),
+        return_exceptions=True,
+    )
+    if isinstance(addr, Exception):
+        addr = {"source": "fallback", "full_address": None}
+    if isinstance(landmarks, Exception):
+        landmarks = []
+    return {"address": addr, "landmarks": landmarks}
