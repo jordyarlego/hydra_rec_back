@@ -58,14 +58,21 @@ def _to_consensus(snap: Optional[dict]) -> dict:
     # APAC não traz previsão futura nem 24h acumulado direto. Usamos a leitura
     # corrente como proxy ponderado: 1h × 6 ≈ próximas 6h se a chuva persistir.
     rain_now = snap.get("rain_1h_mm") or 0.0
-    rain_past = snap.get("rain_24h_mm") or rain_now  # quando o worker preencher 24h, usa real
+    rain_past = snap.get("rain_24h_mm") or rain_now
+    # IMPORTANTE: NÃO inventamos fallback pra temperatura/umidade.
+    # Se a estação APAC mais próxima não publicar essa medida, retornamos
+    # null e o frontend mostra "—" em vez de 28°/70% (que era engano).
+    # Por isso a leitura pode divergir do site oficial APAC: cada estação
+    # tem leitura própria, e usamos a mais próxima do bairro selecionado.
     return {
-        "rain_next_24h_mm": round(rain_now * 6, 2),  # extrapolação conservadora
+        "rain_next_24h_mm": round(rain_now * 6, 2),
         "rain_past_24h_mm": round(rain_past, 2),
-        "humidity":         snap.get("humidity_pct") or 70,
-        "pressure":         1013,  # APAC não publica pressão; default
-        "temperature":      snap.get("temp_c") if snap.get("temp_c") is not None else 28,
+        "humidity":         snap.get("humidity_pct"),
+        "pressure":         None,
+        "temperature":      snap.get("temp_c"),
         "wind_speed_kmh":   snap.get("wind_kmh") or 0,
+        "station_name":     snap.get("station_name"),
+        "station_distance_m": snap.get("station_distance_m"),
         "confidence":       "ALTA" if snap.get("source") == "cemaden" else "MEDIA",
         "sources_count":    1,
         "source":           snap.get("source", "apac"),

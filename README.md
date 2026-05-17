@@ -285,6 +285,21 @@ O report do cidadão não precisa cair exatamente no mesmo ponto do registro ofi
 
 Isso significa que um report de buraco perto da Rua da Soledade pode cruzar com `OPERACAO TAPA-BURACO` mesmo que o ponto do usuário não seja idêntico ao ponto oficial.
 
+**O que é Haversine e por que usamos:**
+
+Haversine é uma fórmula para calcular a distância aproximada entre dois pontos na superfície da Terra usando latitude e longitude. Ela considera a curvatura do planeta, diferente de uma subtração simples de coordenadas.
+
+No HydraRec ela serve para:
+
+- validar se o report foi feito perto da posição real do usuário;
+- ordenar chamados oficiais por proximidade real;
+- aplicar o raio de cruzamento, hoje `300m`, entre report cidadão e registros oficiais;
+- evitar dizer que dois pontos são próximos só porque as coordenadas parecem parecidas numericamente.
+
+Exemplo prático: se o usuário reporta um buraco em `lat=-8.05623, lon=-34.89018`, o backend compara esse ponto com registros oficiais ao redor. Um registro de `OPERACAO TAPA-BURACO` a 0m, 50m ou 120m entra como evidência próxima; um registro a 2km não entra no raio de reincidência daquele report.
+
+Implementação: `services/geo_cross.py::haversine_distance_m`.
+
 **Seed MVP:**
 
 `POST /api/admin/official-data/import-seed` usa `data/seed/official_sample.json`. É uma amostra pequena para demonstração/fallback quando o portal oficial está fora ou muda schema. Seed não representa todo o histórico da cidade.
