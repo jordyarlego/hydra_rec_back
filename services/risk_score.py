@@ -36,8 +36,11 @@ def calculate_risk_score_v2(
 ) -> RiskBreakdown:
     next_24h   = weather_consensus["rain_next_24h_mm"]
     past_24h   = weather_consensus["rain_past_24h_mm"]
-    humidity   = weather_consensus.get("humidity", 70)
-    pressure   = weather_consensus.get("pressure", 1013)
+    # `or` aqui é proposital: APAC pode retornar None nesses campos
+    # quando a estação mais próxima não publica a medida. Pro cálculo
+    # de risco, caímos em valor neutro (na UI seguimos mostrando "—").
+    humidity   = weather_consensus.get("humidity") or 70
+    pressure   = weather_consensus.get("pressure") or 1013
     confidence = weather_consensus.get("confidence", "ALTA")
 
     if vulnerability is None:

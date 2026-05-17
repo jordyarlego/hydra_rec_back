@@ -1,5 +1,11 @@
-def heat_index_steadman(T_celsius: float, RH_percent: float) -> float:
-    """Sensação térmica pelo método Steadman/NOAA Rothfusz. Para T < 27°C retorna T."""
+def heat_index_steadman(T_celsius, RH_percent) -> float | None:
+    """Sensação térmica pelo método Steadman/NOAA Rothfusz. Para T < 27°C retorna T.
+
+    Quando temp ou umidade vem None (estação APAC sem leitura),
+    retorna None — UI mostra "—" em vez de número inventado.
+    """
+    if T_celsius is None or RH_percent is None:
+        return None
     if T_celsius < 27:
         return round(T_celsius, 1)
     T_f = T_celsius * 9 / 5 + 32
@@ -17,7 +23,9 @@ def heat_index_steadman(T_celsius: float, RH_percent: float) -> float:
     return round((HI_f - 32) * 5 / 9, 1)
 
 
-def heat_risk_label(hi_celsius: float) -> str:
+def heat_risk_label(hi_celsius) -> str:
+    if hi_celsius is None:
+        return "DESCONHECIDO"
     if hi_celsius >= 54:
         return "CRITICO"
     if hi_celsius >= 41:
