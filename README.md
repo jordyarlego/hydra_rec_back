@@ -239,6 +239,44 @@ POST /api/admin/reports/batch-approve { report_ids: [...] }
 | **Postes de iluminação Recife** | CSV public | Cadastro pra cruzamento de iluminação | `services/official_importer.py` |
 | **Logradouros Recife** | CSV public | Nome de via mais próxima | `services/official_importer.py` |
 
+### 5.0 Por que os dados de clima podem divergir do Google ou do site oficial APAC
+
+Pergunta comum: "o Google diz que está 26 °C com 82% de umidade e céu limpo, mas o HydraRec mostra 28 °C, 100% de umidade e chuva leve. Quem está certo?" Os dois podem estar certos — eles vêm de fontes diferentes, medindo coisas diferentes.
+
+**De onde vem cada número do HydraRec** (ver `services/apac_official.py::weather_at`):
+
+| Variável | Fonte | Raio máximo de busca |
+|---|---|---|
+| Chuva (mm/h) | Estação CEMADEN mais próxima | 30 km |
+| Temperatura, umidade, vento | Estação `meteorologia24h` mais próxima | 80 km |
+| Fallback de temperatura/umidade | Estação `climatologico` mais próxima | 50 km |
+| Alerta agregado da RMR | Boletim sintético APAC | RMR inteira |
+
+Cada uma dessas é uma **estação física diferente**, instalada em um endereço real. A estação CEMADEN que mede chuva no bairro selecionado **não é** a mesma estação que mede temperatura — porque CEMADEN não publica temperatura, e `meteorologia24h` não tem cobertura densa na RMR. O HydraRec pega a estação mais próxima de cada variável e mostra todas juntas.
+
+**De onde vem o número do Google Weather:**
+
+- O endereço "Av. Cruz Cabugá, 1111 — Santo Amaro" que o Google mostra é só **referência geográfica** da sede da APAC. Os números em si **não** vêm dos sensores APAC.
+- O dado vem da **The Weather Channel / IBM** (modelo numérico global combinado com APIs comerciais), suavizado pra um ponto único da cidade e atualizado a cada ~1 hora.
+
+**Por que isso gera divergência real:**
+
+| Causa | Efeito típico |
+|---|---|
+| Estações fisicamente distantes (até 80 km) | Temperatura difere 2–3 °C entre bairros (ilhas de calor) |
+| Garoa fina <0.2 mm satura sensor de umidade local | Umidade chega a 100% por minutos; modelo do Google amortiza |
+| Cobertura de nuvem é hiperlocal | Pode chover em Casa Amarela e céu limpo em Boa Viagem ao mesmo tempo |
+| Defasagem do modelo agregado | Google atualiza a cada ~1 h; CEMADEN a cada 5 min |
+| Site oficial APAC cita estação central | Mostra leitura de Santo Amaro mesmo pra usuário em outro bairro |
+
+**O que o HydraRec optou por fazer:**
+
+- Mostrar o número **fiel à estação real mais próxima** do bairro selecionado, não a média da cidade.
+- **Não inventar fallback** quando a estação não publica a variável: o frontend mostra `—` em vez de exibir `28°` / `70%` chumbados (correção F5).
+- Expor no HeroCard um botão **ⓘ** ao lado do nome da estação, que abre o detalhamento "Chuva: estação X (Y km) · Temp: estação Z (W km)" pra o usuário entender de onde vem cada número.
+
+Resultado: o HydraRec tende a ser **mais fiel ao que está acontecendo naquele ponto da cidade naquele minuto**, enquanto o Google tende a ser mais **suavizado e atrasado**, e o site oficial APAC tende a mostrar **a estação central** mesmo pra outros bairros.
+
 ### 5.1 Bases oficiais importadas
 
 As bases oficiais importadas **não ficam em arquivo local** depois da coleta. Elas são normalizadas e salvas no Supabase, usando a `SUPABASE_SERVICE_KEY` somente no backend.
