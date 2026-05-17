@@ -94,6 +94,24 @@ async def official_import_status(_admin=Depends(require_admin)):
     }
 
 
+@router.post("/official-data/import-seed")
+async def trigger_official_seed_import(_admin=Depends(require_admin)):
+    """
+    Importa um dataset estático pré-curado (~120 registros).
+    Roda em primeiro plano (rápido, <1s) — não bloqueia.
+    Usado quando o Portal de Dados Abertos do Recife falha (timeout,
+    schema mudou, etc) ou quando o admin quer popular pra MVP/demo
+    sem depender de fonte externa.
+    """
+    try:
+        from services.official_importer import import_from_seed
+        result = await import_from_seed()
+        return {"status": "ok", "result": result}
+    except Exception as e:
+        logger.exception("import_from_seed failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/official-data/coverage")
 async def official_data_coverage(_admin=Depends(require_admin)):
     """

@@ -516,3 +516,98 @@ async def get_import_status() -> list[dict]:
     except Exception as e:
         logger.error(f"get_import_status error: {e}")
         return []
+
+
+# ════════════════════════════════════════════════════════════════════
+# SEED MVP — import de dataset estatico pre-curado.
+# Usar quando Portal de Dados Abertos esta off-line ou retornando schema
+# incompativel. ~120 chamados representativos por bairros centrais
+# (suficiente pra demonstrar cruzamento, recurrence_score, kanban).
+# ════════════════════════════════════════════════════════════════════
+async def import_from_seed() -> dict:
+    """Importa dataset estatico (data/seed/official_sample.json)."""
+    import json
+    import os as _os
+
+    start = time.time()
+    ok = err = 0
+    first_error: Optional[str] = None
+
+    seed_path = _os.path.join(
+        _os.path.dirname(_os.path.abspath(__file__)), "..", "data", "seed", "official_sample.json"
+    )
+    try:
+        with open(seed_path, "r", encoding="utf-8") as f:
+            seed = json.load(f)
+    except Exception as e:
+        _log_import("seed", 0, 1, time.time() - start, f"seed read error: {e}")
+        return {"ok": 0, "err": 1, "error": str(e)}
+
+    client = _get_client()
+
+    # 1. Bairros (point-in-polygon precisa, mas geojson estatico ja cobre).
+    #    Aqui só garante presenca na tabela official_neighborhoods.
+    nb_rows = []
+    for nb in seed.get("neighborhoods", []):
+        nb_rows.append({
+            "name": nb["name"],
+            "rpa": nb["rpa"],
+            "lat": nb.get("lat"),
+            "lon": nb.get("lon"),
+        })
+    if nb_rows:
+        try:
+            client.table("official_neighborhoods").upsert(
+                nb_rows, on_conflict="name"
+            ).execute()
+        except Exception as e:
+            logger.warning(f"seed neighborhoods upsert failed: {e}")
+
+    # 2. Chamados oficiais
+    nb_index = {nb["name"]: nb for nb in seed.get("neighborhoods", [])}
+    rows = []
+    for idx, sr in enumerate(seed.get("service_requests", [])):
+        nb = nb_index.get(sr.get("neighborhood"), {})
+        ext = f"seed-{sr.get('category','outro')}-{idx:04d}"
+        rows.append({
+            "external_id":   ext[:120],
+            "source":        "seed_mvp",
+            "agency":        "EMLURB" if sr.get("category") not in ("deslizamento",) else "DEFESA_CIVIL",
+            "service_type":  sr.get("service_type") or sr.get("category"),
+            "category":      sr.get("category"),
+            "status":        sr.get("status"),
+            "description":   f"{sr.get('service_type')} - {sr.get('neighborhood')}",
+            "neighborhood":  sr.get("neighborhood"),
+            "rpa":           nb.get("rpa"),
+            "street_name":   sr.get("street"),
+            "lat":           nb.get("lat"),
+            "lon":           nb.get("lon"),
+            "opened_at":     _safe_date(sr.get("opened_at")),
+            "closed_at":     _safe_date(sr.get("closed_at")),
+            "raw":           None,
+        })
+
+    for i in range(0, len(rows), _BATCH_SIZE):
+        batch = rows[i:i + _BATCH_SIZE]
+        try:
+            client.table("official_service_requests").upsert(
+                batch, on_conflict="source,external_id"
+            ).execute()
+            ok += len(batch)
+        except Exception as e:
+            err += len(batch)
+            if not first_error:
+                first_error = f"{type(e).__name__}: {str(e)[:400]}"
+                logger.error(f"seed upsert FALHOU no batch {i}: {first_error}")
+                logger.error(f"Sample row: {batch[0]}")
+
+    duration = time.time() - start
+    error_msg = first_error if err > 0 else None
+    _log_import("seed", ok, err, duration, error_msg)
+    return {
+        "ok": ok, "err": err,
+        "duration_s": round(duration, 2),
+        "error": error_msg,
+        "source": "seed_mvp",
+        "description": "Amostra pre-curada (~120 registros) — independe do Portal de Dados Abertos.",
+    }
