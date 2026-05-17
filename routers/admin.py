@@ -344,6 +344,14 @@ async def get_official_crossing(report_id: str, _admin=Depends(require_admin)):
         else:
             crossing = res.data[0]
         crossing["available"] = True
+        try:
+            cov = _db().table("official_service_requests").select("source", count="exact").limit(1).execute()
+            crossing["official_request_count"] = cov.count or 0
+            src = _db().table("official_service_requests").select("source").limit(500).execute()
+            crossing["official_sources"] = sorted({r.get("source") for r in (src.data or []) if r.get("source")})
+        except Exception:
+            crossing["official_request_count"] = None
+            crossing["official_sources"] = []
 
         # Hidrata priority engine
         report_res = _db().table("reports").select(

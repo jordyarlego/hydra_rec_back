@@ -120,6 +120,68 @@ def _log_import(source: str, ok: int, err: int, duration: float, error: str = No
         logger.debug(f"Import log write failed: {e}")
 
 
+def _upsert_service_request_batches(client, rows: list[dict], source: str) -> tuple[int, int, Optional[str]]:
+    """
+    Persiste chamados oficiais de forma incremental.
+
+    A migration cria índice único em (source, external_id), então cada coleta
+    atualiza o que já existe e insere somente o que ainda não existe. Isso evita
+    apagar histórico antigo do Supabase a cada importação.
+    """
+    ok = err = 0
+    first_error: Optional[str] = None
+    for i in range(0, len(rows), _BATCH_SIZE):
+        batch = rows[i:i + _BATCH_SIZE]
+        try:
+            client.table("official_service_requests").upsert(
+                batch,
+                on_conflict="source,external_id",
+            ).execute()
+            ok += len(batch)
+        except Exception as e:
+            err += len(batch)
+            if not first_error:
+                first_error = f"{type(e).__name__}: {str(e)[:400]}"
+                logger.error(f"{source} upsert FALHOU no batch {i}: {first_error}")
+                logger.error(f"Sample row: {batch[0] if batch else None}")
+    return ok, err, first_error
+
+
+def _incremental_insert_service_request_batches(client, rows: list[dict], source: str) -> tuple[int, int, Optional[str]]:
+    """
+    Fallback para Supabase/PostgREST quando o índice único é parcial e não
+    pode ser usado em `on_conflict`. Mantém os antigos e insere só IDs novos.
+    """
+    ok = err = 0
+    first_error: Optional[str] = None
+    source_key = rows[0]["source"] if rows else ""
+
+    for i in range(0, len(rows), _BATCH_SIZE):
+        batch = rows[i:i + _BATCH_SIZE]
+        try:
+            ids = [r["external_id"] for r in batch if r.get("external_id")]
+            existing = set()
+            if ids:
+                res = (client.table("official_service_requests")
+                       .select("external_id")
+                       .eq("source", source_key)
+                       .in_("external_id", ids)
+                       .execute())
+                existing = {r.get("external_id") for r in (res.data or [])}
+            new_rows = [r for r in batch if r.get("external_id") not in existing]
+            if new_rows:
+                client.table("official_service_requests").insert(new_rows).execute()
+            ok += len(batch)
+        except Exception as e:
+            err += len(batch)
+            if not first_error:
+                first_error = f"{type(e).__name__}: {str(e)[:400]}"
+                logger.error(f"{source} incremental insert FALHOU no batch {i}: {first_error}")
+                logger.error(f"Sample row: {batch[0] if batch else None}")
+
+    return ok, err, first_error
+
+
 # ── Importadores por fonte ────────────────────────────────────────────────
 
 async def import_neighborhoods() -> dict:
@@ -170,9 +232,11 @@ async def import_neighborhoods() -> dict:
         })
 
     client = _get_client()
-    # DELETE+INSERT (schema atual sem unique constraint em lower(name))
+    # DELETE+INSERT: a constraint é lower(name), então remove qualquer fonte
+    # com o mesmo nome antes de inserir o GeoJSON oficial.
     try:
-        client.table("official_neighborhoods").delete().eq("source", "geojson_recife_2023").execute()
+        names = [r["name"] for r in rows]
+        client.table("official_neighborhoods").delete().in_("name", names).execute()
     except Exception as e:
         logger.warning(f"Neighborhoods pre-delete falhou: {e}")
     for i in range(0, len(rows), _BATCH_SIZE):
@@ -274,20 +338,25 @@ async def import_emlurb_156(mvp_only: bool = True) -> dict:
         return {"ok": 0, "err": 1, "error": str(e)}
 
     rows = []
+    seen_external_ids = set()
     for idx, raw in enumerate(rows_raw):
         try:
             grupo = _col(raw, "GRUPOSERVICO_DESCRICAO", "grupo_servico", "tipo_servico", default="")
             servico = _col(raw, "SERVICO_DESCRICAO", "servico_descricao", "servico", default="")
             categoria = f"{grupo} - {servico}".strip(" -")
             ext_id = _col(raw, "protocolo", "id_demanda", "id", "numero")
-            if not ext_id:
+            if not ext_id or str(ext_id).strip().upper() in ("SN", "S/N", "SEM NUMERO", "SEM NÚMERO"):
                 bairro = _col(raw, "BAIRRO", "bairro", default="")
                 data = _col(raw, "DATA_DEMANDA", "data_demanda", default="")
                 ext_id = f"emlurb-{idx}-{bairro}-{data}"[:120]
+            ext_id = str(ext_id).strip()[:120]
+            if ext_id in seen_external_ids:
+                ext_id = f"{ext_id}-{idx}"[:120]
+            seen_external_ids.add(ext_id)
 
             rpa_raw = _col(raw, "RPA", "rpa")
             rows.append({
-                "external_id":   str(ext_id)[:120],
+                "external_id":   ext_id,
                 "source":        "emlurb_156",
                 "agency":        "EMLURB",
                 "service_type":  (servico or grupo)[:200] or None,
@@ -316,23 +385,12 @@ async def import_emlurb_156(mvp_only: bool = True) -> dict:
     logger.info(f"EMLURB normalizado: {len(rows)} válidas / {err} erros de parse")
 
     client = _get_client()
-    # DELETE+INSERT: limpa source='emlurb_156' antes pra evitar erro 42P10
-    # (schema atual não tem unique constraint em (source, external_id))
-    try:
-        client.table("official_service_requests").delete().eq("source", "emlurb_156").execute()
-    except Exception as e:
-        logger.warning(f"EMLURB pre-delete falhou: {e}")
-    for i in range(0, len(rows), _BATCH_SIZE):
-        batch = rows[i:i + _BATCH_SIZE]
-        try:
-            client.table("official_service_requests").insert(batch).execute()
-            ok += len(batch)
-        except Exception as e:
-            err += len(batch)
-            if not first_error:
-                first_error = f"{type(e).__name__}: {str(e)[:400]}"
-                logger.error(f"EMLURB insert FALHOU no batch {i}: {first_error}")
-                logger.error(f"Sample row: {batch[0]}")
+    batch_ok, batch_err, first_error = _upsert_service_request_batches(client, rows, "EMLURB")
+    if first_error and "42p10" in first_error.lower():
+        logger.warning("EMLURB: on_conflict indisponível; usando inserção incremental por external_id.")
+        batch_ok, batch_err, first_error = _incremental_insert_service_request_batches(client, rows, "EMLURB")
+    ok += batch_ok
+    err += batch_err
 
     duration = time.time() - start
     error_msg = first_error if err > 0 else None
@@ -406,21 +464,12 @@ async def import_defesa_civil(mvp_only: bool = True) -> dict:
     logger.info(f"Defesa Civil normalizado: {len(rows)} válidas / {err} erros de parse")
 
     client = _get_client()
-    try:
-        client.table("official_service_requests").delete().eq("source", "defesa_civil").execute()
-    except Exception as e:
-        logger.warning(f"Defesa Civil pre-delete falhou: {e}")
-    for i in range(0, len(rows), _BATCH_SIZE):
-        batch = rows[i:i + _BATCH_SIZE]
-        try:
-            client.table("official_service_requests").insert(batch).execute()
-            ok += len(batch)
-        except Exception as e:
-            err += len(batch)
-            if not first_error:
-                first_error = f"{type(e).__name__}: {str(e)[:400]}"
-                logger.error(f"Defesa Civil insert FALHOU no batch {i}: {first_error}")
-                logger.error(f"Sample row: {batch[0]}")
+    batch_ok, batch_err, first_error = _upsert_service_request_batches(client, rows, "Defesa Civil")
+    if first_error and "42p10" in first_error.lower():
+        logger.warning("Defesa Civil: on_conflict indisponível; usando inserção incremental por external_id.")
+        batch_ok, batch_err, first_error = _incremental_insert_service_request_batches(client, rows, "Defesa Civil")
+    ok += batch_ok
+    err += batch_err
 
     duration = time.time() - start
     error_msg = first_error if err > 0 else None
@@ -486,13 +535,20 @@ async def import_public_lighting_posts() -> dict:
 async def import_all(sources: list[str] | None = None) -> dict:
     """
     Roda os importadores essenciais. Postes opcional — pode ser muito grande
-    pro MVP. Default: bairros + emlurb 156 + defesa civil, todos com filtro
-    MVP (bairros centrais).
+    pro MVP. Default: bairros + EMLURB 156 + Defesa Civil sem filtro MVP,
+    ou seja, importa o snapshot público completo que o Portal de Dados
+    Abertos disponibilizar naquele momento.
     """
+    async def import_emlurb_full():
+        return await import_emlurb_156(mvp_only=False)
+
+    async def import_defesa_civil_full():
+        return await import_defesa_civil(mvp_only=False)
+
     all_sources = {
         "neighborhoods": import_neighborhoods,
-        "emlurb_156":    import_emlurb_156,
-        "defesa_civil":  import_defesa_civil,
+        "emlurb_156":    import_emlurb_full,
+        "defesa_civil":  import_defesa_civil_full,
         # "postes":      import_public_lighting_posts,  # 200k+ rows, opt-in
     }
     to_run = {k: v for k, v in all_sources.items() if sources is None or k in sources}

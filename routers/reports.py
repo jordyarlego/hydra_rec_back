@@ -109,6 +109,16 @@ async def _create_report_core(
     return {
         "id": report_id,
         "status": "criado",
+        "type": tipo,
+        "severity": severidade,
+        "lat": lat,
+        "lon": lon,
+        "bairro": bairro,
+        "description": descricao,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "confirmed_count": 0,
+        "likes_up": 0,
+        "likes_down": 0,
         "weather": weather_snapshot,
         "photo_url": photo_url if photo_persisted else None,
         "photo_persisted": photo_persisted,
@@ -249,7 +259,7 @@ async def get_nearby_reports(lat: float, lon: float, radius: float = 2000):
     def _query(fields: str):
         return (client.table("reports")
                 .select(fields)
-                .eq("resolved", False)
+                .or_("resolved.is.false,resolved.is.null")
                 .gte("created_at", cutoff)
                 .gte("lat", lat - delta_lat).lte("lat", lat + delta_lat)
                 .gte("lon", lon - delta_lon).lte("lon", lon + delta_lon)

@@ -239,6 +239,68 @@ POST /api/admin/reports/batch-approve { report_ids: [...] }
 | **Postes de iluminação Recife** | CSV public | Cadastro pra cruzamento de iluminação | `services/official_importer.py` |
 | **Logradouros Recife** | CSV public | Nome de via mais próxima | `services/official_importer.py` |
 
+### 5.1 Bases oficiais importadas
+
+As bases oficiais importadas **não ficam em arquivo local** depois da coleta. Elas são normalizadas e salvas no Supabase, usando a `SUPABASE_SERVICE_KEY` somente no backend.
+
+**Onde fica salvo:**
+
+| Tabela Supabase | Conteúdo |
+|---|---|
+| `official_neighborhoods` | Bairros oficiais do Recife, RPA, macrozona/microrregião e metadados do GeoJSON |
+| `official_service_requests` | Chamados oficiais/históricos importados da EMLURB 156 e Defesa Civil |
+| `official_import_log` | Log de cada importação: fonte, quantidade OK, erros, duração e mensagem |
+| `report_official_crossings` | Resultado do cruzamento entre um report do cidadão e as bases oficiais |
+| `official_roads` | Vias/logradouros, quando essa base estiver carregada |
+| `official_hotspots` | Hotspots oficiais, quando pré-computados |
+
+**Como a coleta funciona:**
+
+1. O admin chama `POST /api/admin/official-data/import`, ou o backend roda `services.official_importer.import_all()`.
+2. `official_importer.py` consulta o registry em `services/official_data_sources.py`.
+3. Para EMLURB 156 e Defesa Civil, o backend descobre o CSV mais recente no Portal de Dados Abertos do Recife, baixa o arquivo e normaliza colunas como `bairro`, `logradouro`, `serviço`, `status`, `data`, `lat` e `lon`.
+4. Para bairros oficiais, o backend lê o GeoJSON local `front_end_hydrarec/src/data/geo/recife_bairros_2023.geojson`.
+5. EMLURB/Defesa Civil são salvos de forma incremental pela chave `(source, external_id)`: registro novo é inserido e o histórico antigo permanece no Supabase. Quando o banco expõe essa chave ao PostgREST como constraint completa, o importador faz `upsert` e também atualiza registros repetidos; se o banco só tiver índice parcial, o fallback insere apenas IDs novos sem apagar os antigos.
+6. Quando um cidadão envia um report, `_cross_official()` grava em `report_official_crossings` bairro/RPA/rua aproximada, reincidência e chamados oficiais próximos.
+
+**Importante:** essa base oficial não é stream em tempo real. APAC/CEMADEN é consultado como dado vivo de chuva; EMLURB/Defesa Civil vêm como snapshots públicos do portal. Portanto a atualização correta é periódica ou manual pelo admin, não em tempo real.
+
+**Importação incremental vs. carga completa:**
+
+- A primeira importação popula o histórico disponível.
+- As próximas importações consultam novamente o snapshot público e tentam fazer `upsert`.
+- Se um chamado já existe em `official_service_requests`, ele é atualizado quando o Supabase aceita `on_conflict`; no fallback, ele é mantido como está.
+- Se apareceu um chamado novo no portal, ele é inserido.
+- O importador não precisa apagar os antigos para descobrir novos.
+- O campo que garante isso é `external_id`, combinado com `source`.
+
+**Proximidade no cruzamento:**
+
+O report do cidadão não precisa cair exatamente no mesmo ponto do registro oficial. O cruzamento usa:
+
+- raio padrão de 300m para registros oficiais com `lat/lon`;
+- cálculo Haversine para ordenar por distância real;
+- comparação de tipo do report com `service_type` oficial, tolerando termos sem acento como `ILUMINACAO`, `PAVIMENTACAO`, `TAPA-BURACO`;
+- fallback por bairro quando há poucos registros georreferenciados próximos.
+
+Isso significa que um report de buraco perto da Rua da Soledade pode cruzar com `OPERACAO TAPA-BURACO` mesmo que o ponto do usuário não seja idêntico ao ponto oficial.
+
+**Seed MVP:**
+
+`POST /api/admin/official-data/import-seed` usa `data/seed/official_sample.json`. É uma amostra pequena para demonstração/fallback quando o portal oficial está fora ou muda schema. Seed não representa todo o histórico da cidade.
+
+**Comandos úteis locais:**
+
+```bash
+cd back_end_hydrarec
+
+# Importar snapshot completo disponível no portal público
+venv/bin/python -c $'from dotenv import load_dotenv\nload_dotenv()\nimport asyncio\nfrom services.official_importer import import_all\nprint(asyncio.run(import_all()))'
+
+# Verificar totais salvos no Supabase
+venv/bin/python -c $'from dotenv import load_dotenv\nload_dotenv()\nfrom services.supabase_client import get_service_client\ndb=get_service_client()\nfor t in ["official_neighborhoods","official_service_requests"]:\n    r=db.table(t).select("id", count="exact").limit(1).execute()\n    print(t, r.count)'
+```
+
 ---
 
 ## 6. Database (Supabase)
@@ -248,6 +310,7 @@ POST /api/admin/reports/batch-approve { report_ids: [...] }
 1. `v3_civic_reports.sql` — reports, weather_snapshots, report_likes, tickets, admin_audit
 2. `v3_official_data_hub.sql` — official_neighborhoods, official_service_requests, hotspots
 3. `v4_triagem_v2.sql` — bucket, is_urban_problem, kanban_state, assigned_org, sla_deadline
+4. `v5_official_requests_full_unique.sql` — índice único completo para `upsert` incremental em `(source, external_id)`
 
 **Tabelas principais:**
 

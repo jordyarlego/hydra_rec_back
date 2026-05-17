@@ -161,7 +161,8 @@ def test_find_similar_filters_by_radius():
         ]
     )
 
-    with patch("services.supabase_client.get_client", return_value=mock_client):
+    with patch("services.supabase_client.get_service_client", return_value=mock_client), \
+         patch("services.supabase_client.get_client", return_value=mock_client):
         # Ponto a > 10m do chamado mockado (que está bem longe) → excluído
         results = find_similar_official_requests(-8.120, -34.900, "buraco", radius_m=10)
 
@@ -178,7 +179,8 @@ async def test_cross_report_missing_report():
         data=None
     )
 
-    with patch("services.supabase_client.get_client", return_value=mock_client):
+    with patch("services.supabase_client.get_service_client", return_value=mock_client), \
+         patch("services.supabase_client.get_client", return_value=mock_client):
         from services.geo_cross import cross_report_with_official_data
         result = await cross_report_with_official_data("nonexistent-id")
 

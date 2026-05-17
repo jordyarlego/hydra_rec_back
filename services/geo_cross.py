@@ -55,12 +55,12 @@ MICRO_NAMES = {
 _REPORT_TO_OFFICIAL = {
     "alagamento":        ["alagamento", "drenagem"],
     "deslizamento":      ["barreira", "deslizamento"],
-    "queda_arvore":      ["poda de árvore", "remoção de árvore", "queda de árvore"],
-    "via_intransitavel": ["tapa-buracos", "pavimentação", "via intransitável"],
-    "poste_caido":       ["iluminação pública", "poste"],
-    "buraco":            ["tapa-buracos", "pavimentação"],
+    "queda_arvore":      ["poda de árvore", "poda de arvores", "remoção de árvore", "remocao de arvore", "queda de árvore", "queda de arvore"],
+    "via_intransitavel": ["tapa-buracos", "tapa-buraco", "pavimentação", "pavimentacao", "via intransitável", "via intransitavel"],
+    "poste_caido":       ["iluminação pública", "iluminacao publica", "lampada", "poste"],
+    "buraco":            ["tapa-buracos", "tapa-buraco", "pavimentação", "pavimentacao"],
     "lixo":              ["limpeza", "coleta de lixo"],
-    "iluminacao":        ["iluminação pública", "poste"],
+    "iluminacao":        ["iluminação pública", "iluminacao publica", "lampada", "poste"],
     "outro":             [],
 }
 
@@ -210,6 +210,26 @@ def find_similar_official_requests(
         results.append({**row, "distance_m": int(d), "related": is_related})
 
     results.sort(key=lambda r: r["distance_m"])
+    if len(results) < 3:
+        neighborhood = find_neighborhood(lat, lon).get("name")
+        if neighborhood:
+            try:
+                fallback = client.table("official_service_requests").select(
+                    "id, source, service_type, category, status, neighborhood, lat, lon, opened_at"
+                ).eq("neighborhood", neighborhood).limit(50).execute()
+                seen = {r.get("id") for r in results}
+                for row in fallback.data or []:
+                    if row.get("id") in seen:
+                        continue
+                    stype = (row.get("service_type") or "").lower()
+                    is_related = any(rt in stype for rt in related_types) if related_types else True
+                    if not is_related:
+                        continue
+                    results.append({**row, "distance_m": radius_m, "related": True, "match_level": "bairro"})
+                    if len(results) >= limit:
+                        break
+            except Exception as e:
+                logger.warning(f"fallback neighborhood official_requests error: {e}")
     return results[:limit]
 
 
