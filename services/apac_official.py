@@ -138,6 +138,27 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _normalize_apac_ts(raw) -> str:
+    """APAC publica timestamps como 'YYYY-MM-DD HH:MM:SS[.f]' sem timezone.
+    O dado é UTC. Sem marcar isso, o JS no browser interpreta como horário
+    LOCAL e mostra hora errada (ex: '23h' enquanto em Recife são 20h).
+
+    Retorna ISO com offset UTC explícito: '2026-05-17T23:40:00+00:00'.
+    """
+    if not raw:
+        return _now_iso()
+    s = str(raw).strip()
+    if not s:
+        return _now_iso()
+    # Se já tem timezone (T...Z, +HH:MM, -HH:MM), devolve como está
+    if "T" in s and ("Z" in s or "+" in s[10:] or "-" in s[10:]):
+        return s
+    s = s.replace(" ", "T")
+    if "." in s:
+        s = s.split(".", 1)[0]
+    return s + "+00:00"
+
+
 # ─────────────────────────────────────────────────────────────
 # Parsers — cada endpoint vira list[Station]
 # ─────────────────────────────────────────────────────────────
@@ -194,7 +215,7 @@ def _parse_cemaden(records: list) -> list[Station]:
             lat=lat,
             lon=lon,
             kind="cemaden",
-            captured_at=str(captured),
+            captured_at=_normalize_apac_ts(captured),
             rain_mm=rain if rain is not None and rain >= 0 else 0.0,
             municipio=inner.get("cidade"),
             raw=inner,
@@ -235,7 +256,7 @@ def _parse_meteorologia24h(records: list) -> list[Station]:
             lat=lat,
             lon=lon,
             kind="meteorologia24h",
-            captured_at=str(captured),
+            captured_at=_normalize_apac_ts(captured),
             temp_c=temp,
             humidity_pct=umid,
             wind_kmh=wind_kmh,
@@ -279,7 +300,7 @@ def _parse_climatologico(records: list) -> list[Station]:
                 lat=lat,
                 lon=lon,
                 kind="climatologico",
-                captured_at=str(captured),
+                captured_at=_normalize_apac_ts(captured),
                 temp_c=temp,
                 humidity_pct=umid,
                 wind_kmh=wind_kmh,
