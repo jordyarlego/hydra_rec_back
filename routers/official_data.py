@@ -3,6 +3,8 @@ Endpoints públicos /api/official/* — dados urbanos oficiais do Recife.
 Apenas leitura. Nenhum dado interno da prefeitura exposto.
 """
 import logging
+import math
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -14,6 +16,16 @@ logger = logging.getLogger(__name__)
 def _db():
     from services.supabase_client import get_client
     return get_client()
+
+
+def _haversine_m(lat1, lon1, lat2, lon2):
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dlat / 2) ** 2
+        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(dlon / 2) ** 2
+    )
+    return 2 * 6371 * math.asin(math.sqrt(a)) * 1000
 
 
 @router.get("/neighborhoods")
@@ -78,6 +90,78 @@ async def search_roads(
         )
         return {"data": res.data or []}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/nearby")
+async def get_official_nearby(
+    lat: float = Query(...),
+    lon: float = Query(...),
+    radius: int = Query(500, ge=50, le=5000),
+    days: int = Query(30, ge=1, le=365),
+    limit: int = Query(10, ge=1, le=30),
+):
+    """
+    Chamados oficiais ABERTOS pela prefeitura dentro do raio (m) e janela (dias).
+    Público — pra cidadão ver o que já tá em andamento por perto.
+
+    Ordenado por distância ASC.
+    """
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        delta_lat = radius / 111_000
+        cos_lat = abs(math.cos(math.radians(lat))) or 1
+        delta_lon = radius / (111_000 * cos_lat)
+
+        res = (
+            _db()
+            .table("official_service_requests")
+            .select(
+                "id, source, agency, service_type, category, status, "
+                "neighborhood, street_name, lat, lon, opened_at, closed_at"
+            )
+            .gte("opened_at", cutoff)
+            .not_.is_("lat", "null")
+            .gte("lat", lat - delta_lat)
+            .lte("lat", lat + delta_lat)
+            .gte("lon", lon - delta_lon)
+            .lte("lon", lon + delta_lon)
+            .limit(200)
+            .execute()
+        )
+
+        rows = []
+        for row in (res.data or []):
+            if row.get("lat") is None or row.get("lon") is None:
+                continue
+            d = _haversine_m(lat, lon, row["lat"], row["lon"])
+            if d > radius:
+                continue
+            rows.append({
+                "id":            row["id"],
+                "source":        row.get("source"),
+                "agency":        row.get("agency"),
+                "service_type":  row.get("service_type"),
+                "category":      row.get("category"),
+                "status":        row.get("status"),
+                "neighborhood":  row.get("neighborhood"),
+                "street_name":   row.get("street_name"),
+                "lat":           row["lat"],
+                "lon":           row["lon"],
+                "opened_at":     row.get("opened_at"),
+                "closed_at":     row.get("closed_at"),
+                "distance_m":    int(d),
+            })
+
+        rows.sort(key=lambda r: r["distance_m"])
+        return {
+            "data":   rows[:limit],
+            "total":  len(rows),
+            "radius_m": radius,
+            "days":   days,
+        }
+    except Exception as e:
+        logger.error(f"official/nearby failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
