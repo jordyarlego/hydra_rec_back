@@ -109,6 +109,35 @@ def _send_one(sub: dict, payload: dict) -> bool:
         return False
 
 
+async def send_to_endpoint(endpoint: str, payload: dict) -> bool:
+    """Manda push pra um endpoint específico (não broadcast).
+
+    Busca os keys (p256dh/auth) da subscription salva e dispara.
+    Usado pelo worker pra notificar dono de report sobre mudança no ticket.
+    """
+    if not VAPID_PRIVATE_KEY or not endpoint:
+        return False
+    db = _get_supabase()
+    if not db:
+        return False
+    try:
+        res = await asyncio.to_thread(
+            lambda: db.table("push_subscriptions")
+                .select("endpoint,p256dh,auth")
+                .eq("endpoint", endpoint)
+                .limit(1)
+                .execute()
+        )
+        rows = res.data or []
+        if not rows:
+            return False
+        sub = _to_webpush_subscription(rows[0])
+        return await asyncio.to_thread(_send_one, sub, payload)
+    except Exception as e:
+        logger.warning(f"send_to_endpoint: {e}")
+        return False
+
+
 async def broadcast_alert(bairro: str, score: int, nivel: str) -> int:
     if not VAPID_PRIVATE_KEY:
         return 0

@@ -91,6 +91,86 @@ async def auto_close_old_resolved() -> dict:
     return {"closed": closed_count, "older_than_days": days}
 
 
+_KANBAN_TO_USER_MSG = {
+    "aberto":       ("Recebemos seu chamado",          "A prefeitura já está com seu report na fila."),
+    "triagem":      ("Seu chamado entrou em análise",  "Estamos avaliando a melhor equipe pra atender."),
+    "em_andamento": ("A prefeitura agiu no seu chamado","Equipe foi acionada pra resolver o ponto que você reportou."),
+    "aguardando":   ("Seu chamado precisa de mais info","A equipe está aguardando dado externo pra prosseguir."),
+    "resolvido":    ("Chamado resolvido!",             "A prefeitura marcou o ponto como atendido. Confere se ficou bom?"),
+    "cancelado":    ("Chamado cancelado",              "A prefeitura encerrou esse chamado. Veja o histórico no app."),
+    "fechado":      ("Chamado arquivado",              "Após o prazo de resolução foi arquivado automaticamente."),
+}
+
+
+async def notify_ticket_state_changes() -> dict:
+    """Detecta tickets cujo kanban_state mudou desde último tick e notifica
+    cidadãos inscritos (via report_push_subscriptions).
+
+    Idempotente: usa coluna `tickets.last_pushed_state` pra evitar re-notificar
+    o mesmo estado. Só dispara se `kanban_state != last_pushed_state`.
+    """
+    try:
+        from services.supabase_client import get_service_client
+        from services.push_service import send_to_endpoint
+        client = get_service_client()
+    except Exception as e:
+        return {"notified": 0, "error": str(e)}
+
+    notified = 0
+    skipped = 0
+    try:
+        res = (
+            client.table("tickets")
+            .select("id,report_id,kanban_state,last_pushed_state,bairro,type")
+            .not_.is_("report_id", "null")
+            .not_.is_("kanban_state", "null")
+            .limit(200)
+            .execute()
+        )
+        for t in (res.data or []):
+            current = t.get("kanban_state")
+            last = t.get("last_pushed_state")
+            if not current or current == last:
+                continue
+
+            title_body = _KANBAN_TO_USER_MSG.get(current)
+            if not title_body:
+                continue
+            title, body = title_body
+
+            subs_res = (
+                client.table("report_push_subscriptions")
+                .select("push_endpoint,last_notified_state")
+                .eq("report_id", t["report_id"])
+                .execute()
+            )
+            payload = {
+                "title": title,
+                "body":  body,
+                "url":   f"/?report={t['report_id']}",
+            }
+            for sub in (subs_res.data or []):
+                if sub.get("last_notified_state") == current:
+                    skipped += 1
+                    continue
+                ok = await send_to_endpoint(sub["push_endpoint"], payload)
+                if ok:
+                    notified += 1
+                    client.table("report_push_subscriptions").update(
+                        {"last_notified_state": current}
+                    ).eq("report_id", t["report_id"]).eq("push_endpoint", sub["push_endpoint"]).execute()
+
+            client.table("tickets").update(
+                {"last_pushed_state": current}
+            ).eq("id", t["id"]).execute()
+
+    except Exception as e:
+        logger.warning("notify_ticket_state_changes: %s", e)
+        return {"notified": notified, "error": str(e)}
+
+    return {"notified": notified, "skipped": skipped}
+
+
 async def check_overdue_sla() -> dict:
     """Loga (e futuramente notifica) tickets com sla_deadline estourado e não fechados."""
     try:
@@ -131,4 +211,22 @@ async def start(interval_s: int = None) -> None:
             logger.info(f"[ticket_lifecycle] tick: close={close_res} sla={sla_res}")
         except Exception as e:
             logger.exception("[ticket_lifecycle] tick error: %s", e)
+        await asyncio.sleep(interval)
+
+
+async def start_push_notifier(interval_s: int = None) -> None:
+    """Loop separado, cadência rápida (60s default) pra push de ticket.
+
+    Não junta no start() porque auto_close/sla podem ser horários;
+    push de ticket precisa chegar pro cidadão em <2 min.
+    """
+    interval = interval_s or int(os.getenv("PUSH_NOTIFIER_INTERVAL_S", "60"))
+    logger.info(f"[push_notifier] start, intervalo={interval}s")
+    while True:
+        try:
+            res = await notify_ticket_state_changes()
+            if res.get("notified") or res.get("error"):
+                logger.info(f"[push_notifier] tick: {res}")
+        except Exception as e:
+            logger.exception("[push_notifier] tick error: %s", e)
         await asyncio.sleep(interval)

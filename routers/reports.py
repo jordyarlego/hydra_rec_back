@@ -386,6 +386,38 @@ async def get_active_alerts(bairro: str | None = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/api/reports/{report_id}/subscribe-push", status_code=200)
+async def subscribe_report_push(report_id: str, payload: dict):
+    """Vincula um push endpoint do cidadão a um report específico,
+    pra notificá-lo quando o ticket muda de estado.
+
+    Body: { "endpoint": "<browser push endpoint URL>" }
+    Idempotente — chamar 2x não duplica.
+    """
+    endpoint = (payload or {}).get("endpoint", "").strip()
+    if not endpoint:
+        raise HTTPException(status_code=400, detail="endpoint obrigatório.")
+
+    from services.supabase_client import get_service_client
+    client = get_service_client()
+    try:
+        # Valida que o report existe
+        rep = client.table("reports").select("id").eq("id", report_id).limit(1).execute()
+        if not rep.data:
+            raise HTTPException(status_code=404, detail="Report não encontrado.")
+
+        client.table("report_push_subscriptions").upsert(
+            {"report_id": report_id, "push_endpoint": endpoint},
+            on_conflict="report_id,push_endpoint",
+        ).execute()
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning("subscribe_report_push falhou: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # IMPORTANTE: `/api/reports/{report_id}` precisa ficar por ÚLTIMO entre os GET
 # do router para não capturar rotas específicas como `/api/reports/nearby`.
 
