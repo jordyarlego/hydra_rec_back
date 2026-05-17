@@ -24,8 +24,9 @@ _BATCH_SIZE = 200  # linhas por upsert no Supabase
 # ── Helpers ───────────────────────────────────────────────────────────────
 
 def _get_client():
-    from services.supabase_client import get_client
-    return get_client()
+    """Importadores precisam do SERVICE client pra bypassar RLS."""
+    from services.supabase_client import get_service_client
+    return get_service_client()
 
 
 def _normalize_category(raw_cat: str, category_map: dict) -> Optional[str]:
@@ -169,15 +170,18 @@ async def import_neighborhoods() -> dict:
         })
 
     client = _get_client()
+    # DELETE+INSERT (schema atual sem unique constraint em lower(name))
+    try:
+        client.table("official_neighborhoods").delete().eq("source", "geojson_recife_2023").execute()
+    except Exception as e:
+        logger.warning(f"Neighborhoods pre-delete falhou: {e}")
     for i in range(0, len(rows), _BATCH_SIZE):
         batch = rows[i:i + _BATCH_SIZE]
         try:
-            client.table("official_neighborhoods").upsert(
-                batch, on_conflict="lower(name)"
-            ).execute()
+            client.table("official_neighborhoods").insert(batch).execute()
             ok += len(batch)
         except Exception as e:
-            logger.error(f"Neighborhood upsert batch failed: {e}")
+            logger.error(f"Neighborhood insert batch failed: {e}")
             err += len(batch)
 
     duration = time.time() - start
@@ -312,18 +316,22 @@ async def import_emlurb_156(mvp_only: bool = True) -> dict:
     logger.info(f"EMLURB normalizado: {len(rows)} válidas / {err} erros de parse")
 
     client = _get_client()
+    # DELETE+INSERT: limpa source='emlurb_156' antes pra evitar erro 42P10
+    # (schema atual não tem unique constraint em (source, external_id))
+    try:
+        client.table("official_service_requests").delete().eq("source", "emlurb_156").execute()
+    except Exception as e:
+        logger.warning(f"EMLURB pre-delete falhou: {e}")
     for i in range(0, len(rows), _BATCH_SIZE):
         batch = rows[i:i + _BATCH_SIZE]
         try:
-            client.table("official_service_requests").upsert(
-                batch, on_conflict="source,external_id"
-            ).execute()
+            client.table("official_service_requests").insert(batch).execute()
             ok += len(batch)
         except Exception as e:
             err += len(batch)
             if not first_error:
                 first_error = f"{type(e).__name__}: {str(e)[:400]}"
-                logger.error(f"EMLURB upsert FALHOU no batch {i}: {first_error}")
+                logger.error(f"EMLURB insert FALHOU no batch {i}: {first_error}")
                 logger.error(f"Sample row: {batch[0]}")
 
     duration = time.time() - start
@@ -398,18 +406,20 @@ async def import_defesa_civil(mvp_only: bool = True) -> dict:
     logger.info(f"Defesa Civil normalizado: {len(rows)} válidas / {err} erros de parse")
 
     client = _get_client()
+    try:
+        client.table("official_service_requests").delete().eq("source", "defesa_civil").execute()
+    except Exception as e:
+        logger.warning(f"Defesa Civil pre-delete falhou: {e}")
     for i in range(0, len(rows), _BATCH_SIZE):
         batch = rows[i:i + _BATCH_SIZE]
         try:
-            client.table("official_service_requests").upsert(
-                batch, on_conflict="source,external_id"
-            ).execute()
+            client.table("official_service_requests").insert(batch).execute()
             ok += len(batch)
         except Exception as e:
             err += len(batch)
             if not first_error:
                 first_error = f"{type(e).__name__}: {str(e)[:400]}"
-                logger.error(f"Defesa Civil upsert FALHOU no batch {i}: {first_error}")
+                logger.error(f"Defesa Civil insert FALHOU no batch {i}: {first_error}")
                 logger.error(f"Sample row: {batch[0]}")
 
     duration = time.time() - start
@@ -545,25 +555,36 @@ async def import_from_seed() -> dict:
 
     client = _get_client()
 
-    # 1. Bairros (point-in-polygon precisa, mas geojson estatico ja cobre).
-    #    Aqui só garante presenca na tabela official_neighborhoods.
+    # 1. Bairros oficiais — schema antigo não tem lat/lon (vem do GeoJSON estatico).
+    #    Insere bairro a bairro pra tolerar colunas faltando entre schemas.
     nb_rows = []
     for nb in seed.get("neighborhoods", []):
         nb_rows.append({
             "name": nb["name"],
             "rpa": nb["rpa"],
-            "lat": nb.get("lat"),
-            "lon": nb.get("lon"),
+            "source": "seed_mvp",
         })
     if nb_rows:
         try:
-            client.table("official_neighborhoods").upsert(
-                nb_rows, on_conflict="name"
-            ).execute()
+            names = [r["name"] for r in nb_rows]
+            client.table("official_neighborhoods").delete().in_("name", names).execute()
         except Exception as e:
-            logger.warning(f"seed neighborhoods upsert failed: {e}")
+            logger.warning(f"seed neighborhoods delete failed: {e}")
+        nb_ok = 0
+        for nb in nb_rows:
+            try:
+                client.table("official_neighborhoods").insert(nb).execute()
+                nb_ok += 1
+            except Exception as e:
+                logger.debug(f"neighborhoods insert {nb.get('name')}: {e}")
+        logger.info(f"seed: {nb_ok}/{len(nb_rows)} bairros inseridos")
 
-    # 2. Chamados oficiais
+    # 2. Chamados oficiais — limpa source='seed_mvp' antes de inserir
+    try:
+        client.table("official_service_requests").delete().eq("source", "seed_mvp").execute()
+    except Exception as e:
+        logger.warning(f"seed pre-delete falhou: {e}")
+
     nb_index = {nb["name"]: nb for nb in seed.get("neighborhoods", [])}
     rows = []
     for idx, sr in enumerate(seed.get("service_requests", [])):
@@ -587,18 +608,17 @@ async def import_from_seed() -> dict:
             "raw":           None,
         })
 
+    # INSERT em lotes (sem on_conflict)
     for i in range(0, len(rows), _BATCH_SIZE):
         batch = rows[i:i + _BATCH_SIZE]
         try:
-            client.table("official_service_requests").upsert(
-                batch, on_conflict="source,external_id"
-            ).execute()
+            client.table("official_service_requests").insert(batch).execute()
             ok += len(batch)
         except Exception as e:
             err += len(batch)
             if not first_error:
                 first_error = f"{type(e).__name__}: {str(e)[:400]}"
-                logger.error(f"seed upsert FALHOU no batch {i}: {first_error}")
+                logger.error(f"seed insert FALHOU no batch {i}: {first_error}")
                 logger.error(f"Sample row: {batch[0]}")
 
     duration = time.time() - start

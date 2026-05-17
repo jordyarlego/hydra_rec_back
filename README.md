@@ -5,7 +5,7 @@ Coleta dados oficiais (APAC, CEMADEN, EMLURB, Defesa Civil), funde com
 reports de cidadãos, calcula um score de risco (HydraScore v2), descreve
 fotos com IA de visão e gera triagem administrativa em fila + kanban.
 
-> Projeto de TCC — UFPE 2026 — Jordy Arlego.
+> Plataforma cívica · Recife.
 > Frontend: [hydra_rec_front](https://github.com/jordyarlego/hydra_rec_front)
 
 ---
@@ -16,7 +16,7 @@ fotos com IA de visão e gera triagem administrativa em fila + kanban.
 |---|---|---|
 | Web framework | **FastAPI** ≥ 0.110 | async-first, OpenAPI auto, Pydantic v2 |
 | Servidor ASGI | **uvicorn** (standard) | dev/prod |
-| Persistência | **Supabase** (PostgreSQL + Storage + Auth + RLS) | TCC sem ops; RLS pra LGPD |
+| Persistência | **Supabase** (PostgreSQL + Storage + Auth + RLS) | Sem ops; RLS pra LGPD |
 | HTTP client | **httpx** ≥ 0.27 | async, timeouts decentes |
 | Parsing HTML | **beautifulsoup4** | scraping APAC quando JSON falha |
 | Validação | **Pydantic** v2 | request/response models |

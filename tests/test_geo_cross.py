@@ -14,7 +14,7 @@ def test_haversine_same_point():
 
 def test_haversine_known_distance():
     from services.geo_cross import haversine_distance_m
-    # Boa Viagem → UFPE (aprox 8.5–9.5 km)
+    # Boa Viagem → Cidade Universitária (aprox 8.5–9.5 km)
     d = haversine_distance_m(-8.1180, -34.9008, -8.0528, -34.9495)
     assert 8000 < d < 10000
 

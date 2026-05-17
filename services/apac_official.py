@@ -56,7 +56,7 @@ _TTL = {
 _HTTP_TIMEOUT = httpx.Timeout(connect=5.0, read=15.0, write=10.0, pool=5.0)
 
 _HEADERS = {
-    "User-Agent": "HydraRec/3.0 (TCC UFPE; civic monitoring; jordyarlego@gmail.com)"
+    "User-Agent": "HydraRec/3.0 (civic monitoring Recife)"
 }
 
 # Bounding box RMR (mais largo que o constraint do banco)
