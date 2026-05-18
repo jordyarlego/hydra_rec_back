@@ -2,8 +2,9 @@ import time
 from collections import OrderedDict
 
 # Cache bounded para não estourar memória no Render free (512MB).
-# OrderedDict mantém ordem de inserção; ao bater MAX_ENTRIES removemos o mais antigo.
-_MAX_ENTRIES = 64
+# Cada entrada APAC pode carregar até ~170 stations. 16 entradas dão folga
+# pros 3 endpoints APAC + algum extra do dashboard sem inflar RAM.
+_MAX_ENTRIES = 16
 _cache: "OrderedDict[str, dict]" = OrderedDict()
 
 

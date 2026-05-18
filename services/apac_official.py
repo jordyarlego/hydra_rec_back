@@ -218,7 +218,9 @@ def _parse_cemaden(records: list) -> list[Station]:
             captured_at=_normalize_apac_ts(captured),
             rain_mm=rain if rain is not None and rain >= 0 else 0.0,
             municipio=inner.get("cidade"),
-            raw=inner,
+            # raw omitido: cemaden tem 171 stations, guardar JSON cru estoura RAM
+            # do free tier do Render. Só climatologico mantém raw (usado em
+            # monthly_climatology pra extrair média mensal).
         )
         key = f"{round(lat, 4)}|{round(lon, 4)}|{name.lower()}"
         prev = by_key.get(key)
@@ -261,7 +263,7 @@ def _parse_meteorologia24h(records: list) -> list[Station]:
             humidity_pct=umid,
             wind_kmh=wind_kmh,
             municipio=inner.get("cidade"),
-            raw=inner,
+            # raw omitido por memória — só climatologico mantém raw.
         ))
     return stations
 

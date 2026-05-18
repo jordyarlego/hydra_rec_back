@@ -14,6 +14,7 @@ Configurável via env:
 from __future__ import annotations
 
 import asyncio
+import gc
 import logging
 import os
 from datetime import datetime, timezone, timedelta
@@ -211,6 +212,8 @@ async def start(interval_s: int = None) -> None:
             logger.info(f"[ticket_lifecycle] tick: close={close_res} sla={sla_res}")
         except Exception as e:
             logger.exception("[ticket_lifecycle] tick error: %s", e)
+        # Render free 512MB: força GC ao fim de cada ciclo pra limitar bloat
+        gc.collect()
         await asyncio.sleep(interval)
 
 
@@ -229,4 +232,5 @@ async def start_push_notifier(interval_s: int = None) -> None:
                 logger.info(f"[push_notifier] tick: {res}")
         except Exception as e:
             logger.exception("[push_notifier] tick error: %s", e)
+        gc.collect()
         await asyncio.sleep(interval)
