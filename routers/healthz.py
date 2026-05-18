@@ -236,6 +236,22 @@ async def _check_storage() -> dict:
 
 @router.get("/api/healthz")
 async def healthz():
+    """LITE — resposta instantânea pro healthcheck do Render.
+
+    O probe do Render bate a cada poucos segundos. Se essa rota
+    fizesse chamada externa (APAC, Supabase) e a dependência engasgasse,
+    o request travava, o event loop ficava ocupado e o Render via
+    'connection refused' nas próximas chamadas → alerta de outage.
+
+    Pra debug humano das dependências use /api/healthz/deps.
+    """
+    return {"status": "ok", "version": "v3", "timestamp": time.time()}
+
+
+@router.get("/api/healthz/deps")
+async def healthz_deps():
+    """Diagnóstico humano de dependências externas. NÃO usar pra
+    healthcheck automático — tem chamadas síncronas pesadas."""
     import asyncio
     apac, supabase, gemini, storage = await asyncio.gather(
         _check_apac(),
