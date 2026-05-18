@@ -494,6 +494,17 @@ async def weather_at(lat: float, lon: float) -> Optional[dict]:
     primary = min(candidates, key=lambda s: haversine_m(lat, lon, s.lat, s.lon))
     primary_distance_m = int(haversine_m(lat, lon, primary.lat, primary.lon))
 
+    # Plausibilidade da leitura meteo: sensor saturado costuma reportar
+    # umidade ~100% combinada com temp alta (>27°C), o que é fisicamente
+    # raríssimo fora de chuva ativa. Sinaliza pra UI mostrar ⚠.
+    meteo_suspect = (
+        meteo_station is not None
+        and meteo_station.humidity_pct is not None
+        and meteo_station.temp_c is not None
+        and meteo_station.humidity_pct >= 99
+        and meteo_station.temp_c >= 27
+    )
+
     return {
         "lat": lat,
         "lon": lon,
@@ -505,6 +516,7 @@ async def weather_at(lat: float, lon: float) -> Optional[dict]:
         "temp_c":             meteo_station.temp_c        if meteo_station else None,
         "humidity_pct":       meteo_station.humidity_pct  if meteo_station else None,
         "wind_kmh":           meteo_station.wind_kmh      if meteo_station else None,
+        "meteo_suspect":      meteo_suspect,
         "source":             primary.kind,
         "captured_at":        primary.captured_at,
         "rain_station": (
