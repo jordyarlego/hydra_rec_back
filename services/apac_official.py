@@ -395,6 +395,68 @@ async def nearest_station(lat: float, lon: float, kind: Kind, max_km: float = 50
     return best
 
 
+async def nearest_fresh_station(
+    lat: float,
+    lon: float,
+    kind: Kind,
+    max_km: float = 30,
+    stale_after_min: int = 60,
+    fresh_within_min: int = 30,
+    fresh_max_km: float = 12,
+) -> Optional[Station]:
+    """Prefere frescura quando a estação mais próxima está velha.
+
+    CEMADEN só publica quando há evento. Em dia seco, a estação mais
+    próxima fica horas sem atualizar — pra cidadão isso parece bug
+    ('atualizado 09:20' às 21h). Quando isso acontece, vale trocar
+    pra uma estação um pouco mais distante mas com leitura RECENTE.
+
+    Critério:
+      1. Pega mais próxima dentro de max_km
+      2. Se ela tem leitura < stale_after_min → retorna ela
+      3. Senão procura alternativa em fresh_max_km com leitura
+         < fresh_within_min → retorna ela
+      4. Senão volta a mais próxima (mesmo velha)
+    """
+    stations = await _fetch_kind(kind)
+    if not stations:
+        return None
+
+    # Calcula distâncias e idade pra todas
+    now = datetime.now(timezone.utc)
+    scored = []
+    for s in stations:
+        d_m = haversine_m(lat, lon, s.lat, s.lon)
+        if d_m > max_km * 1000:
+            continue
+        try:
+            ts = datetime.fromisoformat(s.captured_at.replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            age_min = (now - ts).total_seconds() / 60
+        except Exception:
+            age_min = 9999
+        scored.append((d_m, age_min, s))
+
+    if not scored:
+        return None
+
+    nearest = min(scored, key=lambda x: x[0])
+    if nearest[1] <= stale_after_min:
+        return nearest[2]
+
+    # Primary está velha — busca alternativa fresca em raio maior
+    fresh_candidates = [
+        (d_m, age_min, s) for d_m, age_min, s in scored
+        if d_m <= fresh_max_km * 1000 and age_min <= fresh_within_min
+    ]
+    if fresh_candidates:
+        # Entre as frescas, pega a mais próxima
+        return min(fresh_candidates, key=lambda x: x[0])[2]
+
+    return nearest[2]
+
+
 # ─────────────────────────────────────────────────────────────
 # Snapshot consolidado — chuva (cemaden) + meteo (meteorologia24h)
 # ─────────────────────────────────────────────────────────────
@@ -408,8 +470,17 @@ async def weather_at(lat: float, lon: float) -> Optional[dict]:
         depois `climatologico` (até 50km) como fallback —
         coberto em Recife, onde meteorologia24h não tem estação na RMR.
     """
-    rain_station = await nearest_station(lat, lon, "cemaden", max_km=30)
-    meteo_station = await nearest_station(lat, lon, "meteorologia24h", max_km=80)
+    # nearest_fresh prefere uma estação fresca um pouco mais longe a uma
+    # estação muito velha bem em cima — CEMADEN só publica em evento de chuva,
+    # então em dia seco a mais próxima pode estar parada há horas.
+    rain_station = await nearest_fresh_station(
+        lat, lon, "cemaden",
+        max_km=30, stale_after_min=60, fresh_within_min=120, fresh_max_km=20,
+    )
+    meteo_station = await nearest_fresh_station(
+        lat, lon, "meteorologia24h",
+        max_km=80, stale_after_min=180, fresh_within_min=120, fresh_max_km=50,
+    )
     meteo_source: Kind = "meteorologia24h"
     if meteo_station is None:
         meteo_station = await nearest_station(lat, lon, "climatologico", max_km=50)
