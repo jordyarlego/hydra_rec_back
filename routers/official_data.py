@@ -165,6 +165,74 @@ async def get_official_nearby(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/hotspot-detail")
+async def get_hotspot_detail(
+    neighborhood: str = Query(..., min_length=2),
+    days: int = Query(365, ge=1, le=1825),
+    sample_limit: int = Query(5, ge=1, le=20),
+):
+    """Detalhamento de chamados oficiais para um bairro:
+       agregado por categoria + amostra dos chamados mais recentes.
+
+    Usado pelo popup do mapa quando o cidadão clica num hotspot —
+    em vez de só 'X de recorrência', mostra QUAIS chamados são."""
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        res = (
+            _db()
+            .table("official_service_requests")
+            .select("id,category,service_type,status,opened_at,closed_at,street_name,agency")
+            .ilike("neighborhood", neighborhood)
+            .gte("opened_at", cutoff)
+            .order("opened_at", desc=True)
+            .limit(500)
+            .execute()
+        )
+        rows = res.data or []
+
+        # Agregado por categoria
+        by_cat = {}
+        for r in rows:
+            c = r.get("category") or "outro"
+            by_cat[c] = by_cat.get(c, 0) + 1
+        top_categories = sorted(
+            [{"category": k, "count": v} for k, v in by_cat.items()],
+            key=lambda x: -x["count"],
+        )
+
+        # Amostra dos mais recentes (ainda abertos primeiro)
+        def _is_open(r):
+            s = (r.get("status") or "").lower()
+            return not any(w in s for w in ["conclu", "finaliz", "atendid", "fechad", "resolv", "cancel"])
+        rows_sorted = sorted(
+            rows,
+            key=lambda r: (0 if _is_open(r) else 1, r.get("opened_at") or ""),
+            reverse=False,
+        )
+        # Inverte tempo dentro de cada grupo (abertos mais recentes primeiro)
+        opens = sorted([r for r in rows if _is_open(r)], key=lambda r: r.get("opened_at") or "", reverse=True)
+        closed = sorted([r for r in rows if not _is_open(r)], key=lambda r: r.get("opened_at") or "", reverse=True)
+        sample = (opens + closed)[:sample_limit]
+
+        return {
+            "neighborhood":    neighborhood,
+            "total":           len(rows),
+            "top_categories":  top_categories[:6],
+            "sample":          [{
+                "category":     r.get("category"),
+                "service_type": r.get("service_type"),
+                "status":       r.get("status"),
+                "opened_at":    r.get("opened_at"),
+                "street_name":  r.get("street_name"),
+                "agency":       r.get("agency"),
+            } for r in sample],
+            "days":            days,
+        }
+    except Exception as e:
+        logger.error(f"hotspot-detail failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/hotspots")
 async def get_hotspots(
     tipo: Optional[str] = Query(None),
