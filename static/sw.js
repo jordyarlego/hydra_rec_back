@@ -1,4 +1,4 @@
-const CACHE = 'hydrarec-runtime-v3'
+const CACHE = 'hydrarec-runtime-v4-tz-fix'
 
 self.addEventListener('install', e => {
   // Limpa caches antigos no install
