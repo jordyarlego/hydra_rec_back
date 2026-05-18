@@ -281,6 +281,69 @@ async def get_nearby_reports(lat: float, lon: float, radius: float = 2000):
     return {"reports": reports, "count": len(reports)}
 
 
+@router.get("/api/reports/resolved-week")
+async def get_resolved_week(days: int = 7, limit: int = 200):
+    """Reports cujos tickets vinculados viraram 'resolvido' nos últimos N dias.
+
+    Loop cívico de impacto visual: cidadão vê no mapa a cidade trabalhando.
+    Retorna lista enxuta (id, lat, lon, type, bairro, resolved_at, original_at).
+    """
+    from services.supabase_client import get_client
+    client = get_client()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, days))).isoformat()
+    try:
+        # Detecta se kanban_state existe (v4)
+        use_kanban = True
+        try:
+            client.table("tickets").select("kanban_state").limit(1).execute()
+        except Exception:
+            use_kanban = False
+
+        q = client.table("tickets").select(
+            "id,report_id,updated_at," + ("kanban_state" if use_kanban else "status")
+        ).gte("updated_at", cutoff).not_.is_("report_id", "null").limit(limit)
+        if use_kanban:
+            q = q.eq("kanban_state", "resolvido")
+        else:
+            q = q.eq("status", "resolvido")
+        tickets_res = q.execute()
+
+        tickets = tickets_res.data or []
+        if not tickets:
+            return {"reports": [], "count": 0, "days": days}
+
+        report_ids = [t["report_id"] for t in tickets if t.get("report_id")]
+        ids_csv = ",".join(f'"{rid}"' for rid in report_ids)
+        rep_res = (
+            client.table("reports")
+            .select("id,type,lat,lon,bairro,created_at")
+            .or_(f"id.in.({ids_csv})")
+            .execute()
+        )
+        rep_by_id = {r["id"]: r for r in (rep_res.data or [])}
+
+        results = []
+        for t in tickets:
+            r = rep_by_id.get(t["report_id"])
+            if not r or r.get("lat") is None or r.get("lon") is None:
+                continue
+            results.append({
+                "id":            r["id"],
+                "type":          r.get("type"),
+                "lat":           r["lat"],
+                "lon":           r["lon"],
+                "bairro":        r.get("bairro"),
+                "resolved_at":   t.get("updated_at"),
+                "original_at":   r.get("created_at"),
+            })
+
+        results.sort(key=lambda r: r.get("resolved_at") or "", reverse=True)
+        return {"reports": results, "count": len(results), "days": days}
+    except Exception as e:
+        logger.warning("resolved-week falhou: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/api/reports/{report_id}/confirm", status_code=200)
 async def confirm_report(report_id: str, request: Request):
     ip = request.headers.get("X-Forwarded-For", request.client.host if request.client else "unknown").split(",")[0].strip()
