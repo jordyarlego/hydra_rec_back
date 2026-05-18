@@ -281,6 +281,71 @@ async def get_nearby_reports(lat: float, lon: float, radius: float = 2000):
     return {"reports": reports, "count": len(reports)}
 
 
+@router.get("/api/reports/week-stats")
+async def get_week_stats(days: int = 7):
+    """Stats agregadas pra transparência cívica:
+       total de reports, resolvidos, tempo médio de resolução, top categoria.
+    """
+    from services.supabase_client import get_client
+    client = get_client()
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, days))).isoformat()
+    try:
+        # 1. total de reports criados na janela
+        rep_res = (
+            client.table("reports")
+            .select("id,type,created_at", count="exact")
+            .gte("created_at", cutoff)
+            .limit(2000)
+            .execute()
+        )
+        reports_total = rep_res.count or len(rep_res.data or [])
+
+        # Top categoria
+        by_cat = {}
+        for r in (rep_res.data or []):
+            t = r.get("type") or "outro"
+            by_cat[t] = by_cat.get(t, 0) + 1
+        top_cat = max(by_cat.items(), key=lambda x: x[1])[0] if by_cat else None
+
+        # 2. tickets resolvidos na janela + tempo médio
+        use_kanban = True
+        try:
+            client.table("tickets").select("kanban_state").limit(1).execute()
+        except Exception:
+            use_kanban = False
+
+        q = client.table("tickets").select(
+            "id,report_id,updated_at,created_at," + ("kanban_state" if use_kanban else "status")
+        ).gte("updated_at", cutoff).limit(500)
+        if use_kanban:
+            q = q.eq("kanban_state", "resolvido")
+        else:
+            q = q.eq("status", "resolvido")
+        tk_res = q.execute()
+
+        resolved = len(tk_res.data or [])
+        deltas = []
+        for t in (tk_res.data or []):
+            try:
+                a = datetime.fromisoformat(t["created_at"].replace("Z", "+00:00"))
+                b = datetime.fromisoformat(t["updated_at"].replace("Z", "+00:00"))
+                deltas.append((b - a).total_seconds() / 86400)
+            except Exception:
+                continue
+        avg_days = round(sum(deltas) / len(deltas), 1) if deltas else None
+
+        return {
+            "days":            days,
+            "reports_total":   reports_total,
+            "resolved":        resolved,
+            "avg_resolution_days": avg_days,
+            "top_category":    top_cat,
+        }
+    except Exception as e:
+        logger.warning("week-stats falhou: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/api/reports/resolved-week")
 async def get_resolved_week(days: int = 7, limit: int = 200):
     """Reports cujos tickets vinculados viraram 'resolvido' nos últimos N dias.
