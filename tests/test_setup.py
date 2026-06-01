@@ -26,6 +26,7 @@ def test_required_routes_exist():
         "/api/reports/nearby",
         "/api/apac/boletim",
         "/api/ai/report-assist",
+        "/api/admin/analytics",
     }
     missing = required - paths
     assert not missing, f"Rotas faltando: {missing}"

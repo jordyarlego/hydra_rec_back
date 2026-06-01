@@ -325,6 +325,57 @@ async def list_reports(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/analytics")
+async def admin_analytics(
+    window_hours: int = Query(24, ge=1, le=168),
+    narrate: bool = Query(False),
+    _admin=Depends(require_admin),
+):
+    """Tendências + recomendações (regras) + top prioridades. Gemini só narra."""
+    from datetime import datetime, timezone, timedelta
+    from services.analytics import aggregate_trends, build_recommendations
+    from services.priority_engine import batch_prioritize
+
+    now = datetime.now(timezone.utc)
+    since = (now - timedelta(hours=window_hours * 2)).isoformat()
+    fields = (
+        "id,type,severity,bairro,created_at,likes_up,likes_down,"
+        "status,ai_validation_score,photo_url,photo_ai_severity_hint"
+    )
+    try:
+        res = (
+            _db().table("reports").select(fields)
+            .gte("created_at", since)
+            .order("created_at", desc=True)
+            .execute()
+        )
+        rows = res.data or []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    trends = aggregate_trends(rows, now, window_hours)
+    recommendations = build_recommendations(trends, now)
+
+    top = batch_prioritize([
+        {**r, "tipo": r.get("type"), "severidade": r.get("severity")}
+        for r in rows
+    ])[:10]
+
+    narration = None
+    if narrate:
+        from services.ai_recommender import narrate_recommendations
+        text, model = await narrate_recommendations(recommendations)
+        narration = {"text": text, "model": model}
+
+    return {
+        "window_hours": window_hours,
+        "trends": trends,
+        "recommendations": recommendations,
+        "top_priorities": top,
+        "narration": narration,
+    }
+
+
 @router.get("/reports/{report_id}/official-crossing")
 async def get_official_crossing(report_id: str, _admin=Depends(require_admin)):
     """Cruzamento oficial de um report específico."""
