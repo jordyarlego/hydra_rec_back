@@ -10,7 +10,7 @@ from services.rate_limit import can_report
 from services.alerts_engine import check_and_create_alerts
 from services.weather_cross import snapshot_for_point
 from services.storage import upload_photo, PhotoError, MAX_BYTES as PHOTO_MAX_BYTES
-from services.severity import infer_initial_severity
+from services.severity import infer_initial_severity, resolve_severity_from_vision
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -56,7 +56,7 @@ async def _create_report_core(
 
     # Gravidade NUNCA vem do usuário: derivamos do tipo + chuva APAC.
     # Se houver foto, o pipeline de visão promove a severity_hint depois.
-    if not severidade:
+    if severidade is None:
         severidade = infer_initial_severity(tipo, weather_snapshot)
 
     from services.supabase_client import get_service_client
@@ -154,9 +154,9 @@ async def _run_ai_pipeline(report_id: str, photo_url: str, weather_snapshot: Opt
             "photo_ai_confidence": vision.get("confidence"),
         }
         # IA é fonte da verdade da gravidade: promove severity_hint quando válido.
-        sev_hint = (vision.get("severity_hint") or "").strip().lower()
-        if sev_hint in ("leve", "moderado", "grave"):
-            vision_update["severity"] = sev_hint
+        promoted_sev = resolve_severity_from_vision("", vision.get("severity_hint"))
+        if promoted_sev:
+            vision_update["severity"] = promoted_sev
         # is_urban_problem + severity_hint só persistem se as colunas existirem (V4)
         try:
             update_with_v4 = dict(vision_update)

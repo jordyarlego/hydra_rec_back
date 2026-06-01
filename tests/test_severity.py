@@ -24,6 +24,10 @@ def test_categoria_desconhecida_moderado():
     assert infer_initial_severity("terremoto", None) == "moderado"
 
 
+def test_alagamento_usa_rain_24h_quando_sem_1h():
+    assert infer_initial_severity("alagamento", {"rain_24h_mm": 35}) == "grave"
+
+
 def test_resolve_usa_hint_valido():
     assert resolve_severity_from_vision("moderado", "grave") == "grave"
 
