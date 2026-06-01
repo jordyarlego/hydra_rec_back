@@ -246,7 +246,7 @@ async def get_hotspots(
     """
     try:
         q = _db().table("report_official_crossings").select(
-            "neighborhood,rpa,nearest_road_name,recurrence_score"
+            "neighborhood,rpa,nearest_road_name,recurrence_score,reports(lat,lon)"
         ).gte("recurrence_score", 1.0)
         if bairro:
             q = q.ilike("neighborhood", f"%{bairro}%")
@@ -256,6 +256,18 @@ async def get_hotspots(
         res = q.execute()
 
         rows = res.data or []
+        formatted = []
+        for r in rows:
+            reports_data = r.get("reports") or {}
+            formatted.append({
+                "neighborhood": r.get("neighborhood"),
+                "rpa": r.get("rpa"),
+                "nearest_road_name": r.get("nearest_road_name"),
+                "recurrence_score": r.get("recurrence_score"),
+                "lat": reports_data.get("lat"),
+                "lon": reports_data.get("lon"),
+            })
+        rows = formatted
 
         # Se tipo especificado, filtra via chamados oficiais parecidos
         if tipo and rows:

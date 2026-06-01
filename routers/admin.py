@@ -340,7 +340,7 @@ async def admin_analytics(
     since = (now - timedelta(hours=window_hours * 2)).isoformat()
     fields = (
         "id,type,severity,bairro,created_at,likes_up,likes_down,"
-        "status,ai_validation_score,photo_url,photo_ai_severity_hint"
+        "status,ai_validation_score,photo_url,photo_ai_severity_hint,lat,lon"
     )
     try:
         res = (
