@@ -10,6 +10,7 @@ from services.rate_limit import can_report
 from services.alerts_engine import check_and_create_alerts
 from services.weather_cross import snapshot_for_point
 from services.storage import upload_photo, PhotoError, MAX_BYTES as PHOTO_MAX_BYTES
+from services.severity import infer_initial_severity
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -27,7 +28,7 @@ async def _create_report_core(
     *,
     request: Request,
     tipo: str,
-    severidade: str,
+    severidade: Optional[str] = None,
     lat: float,
     lon: float,
     user_lat: float,
@@ -52,6 +53,11 @@ async def _create_report_core(
 
     weather_snapshot = await snapshot_for_point(lat, lon)
     weather_snapshot_id = (weather_snapshot or {}).get("id")
+
+    # Gravidade NUNCA vem do usuário: derivamos do tipo + chuva APAC.
+    # Se houver foto, o pipeline de visão promove a severity_hint depois.
+    if not severidade:
+        severidade = infer_initial_severity(tipo, weather_snapshot)
 
     from services.supabase_client import get_service_client
     client = get_service_client()
@@ -147,6 +153,10 @@ async def _run_ai_pipeline(report_id: str, photo_url: str, weather_snapshot: Opt
             "photo_ai_description": vision.get("description"),
             "photo_ai_confidence": vision.get("confidence"),
         }
+        # IA é fonte da verdade da gravidade: promove severity_hint quando válido.
+        sev_hint = (vision.get("severity_hint") or "").strip().lower()
+        if sev_hint in ("leve", "moderado", "grave"):
+            vision_update["severity"] = sev_hint
         # is_urban_problem + severity_hint só persistem se as colunas existirem (V4)
         try:
             update_with_v4 = dict(vision_update)
@@ -187,7 +197,7 @@ async def create_report(payload: CreateReportPayload, request: Request):
 async def create_report_with_photo(
     request: Request,
     tipo: str = Form(..., pattern="^(alagamento|deslizamento|queda_arvore|via_intransitavel|poste_caido|buraco|lixo|iluminacao|outro)$"),
-    severidade: str = Form(..., pattern="^(leve|moderado|grave)$"),
+    severidade: Optional[str] = Form(None, pattern="^(leve|moderado|grave)$"),
     lat: float = Form(..., ge=-8.16, le=-7.93),
     lon: float = Form(..., ge=-35.02, le=-34.83),
     user_lat: float = Form(..., ge=-8.16, le=-7.93),
