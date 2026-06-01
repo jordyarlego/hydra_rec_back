@@ -11,6 +11,8 @@ class PushSub(BaseModel):
     endpoint: str
     keys: dict
     expirationTime: float | None = None
+    lat: float | None = None
+    lon: float | None = None
 
 
 @router.get("/api/push/vapid-public-key")

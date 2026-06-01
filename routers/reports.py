@@ -11,6 +11,7 @@ from services.alerts_engine import check_and_create_alerts
 from services.weather_cross import snapshot_for_point
 from services.storage import upload_photo, PhotoError, MAX_BYTES as PHOTO_MAX_BYTES
 from services.severity import infer_initial_severity, resolve_severity_from_vision
+from services.report_validation import validation_deadline_from
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -73,23 +74,32 @@ async def _create_report_core(
         "user_agent":          request.headers.get("User-Agent", "")[:200],
         "weather_snapshot_id": weather_snapshot_id,
         "photo_url":           photo_url,
+        "status":              "em_validacao",
+        "validation_deadline": validation_deadline_from(),
     }
 
-    # Lista de colunas V3 que devem ser dropadas caso o schema ainda seja V2
-    v3_only_cols = ("weather_snapshot_id", "photo_url")
+    # Colunas/status novos são retirados no fallback para manter dev local vivo
+    # quando a migration ainda não foi aplicada.
+    schema_gated_cols = ("weather_snapshot_id", "photo_url", "status", "validation_deadline")
     photo_persisted = True
 
     try:
         res = client.table("reports").insert(row).execute()
     except Exception as e:
         msg = str(e).lower()
-        if any(col in msg for col in v3_only_cols) or "column" in msg or "42703" in msg:
+        if (
+            any(col in msg for col in schema_gated_cols)
+            or "column" in msg
+            or "42703" in msg
+            or "reports_status_check" in msg
+            or "check constraint" in msg
+        ):
             logger.error(
                 "🚨 SCHEMA V3 AUSENTE no Supabase — coluna photo_url/weather_snapshot_id não existe.\n"
                 "    Aplique back_end_hydrarec/migrations/v3_civic_reports.sql no SQL Editor.\n"
                 "    Por enquanto a foto NÃO está sendo persistida no banco (apenas no Storage)."
             )
-            stripped = {k: v for k, v in row.items() if k not in v3_only_cols}
+            stripped = {k: v for k, v in row.items() if k not in schema_gated_cols}
             photo_persisted = False
             try:
                 res = client.table("reports").insert(stripped).execute()
@@ -104,9 +114,11 @@ async def _create_report_core(
         check_and_create_alerts(bairro)
 
     report_id = res.data[0]["id"]
+    report_row = res.data[0]
 
     # Cruzamento com dados oficiais (fire-and-forget)
     asyncio.create_task(_cross_official(report_id))
+    asyncio.create_task(_notify_nearby_validation(report_row))
     if photo_url and photo_persisted:
         asyncio.create_task(_run_ai_pipeline(report_id, photo_url, weather_snapshot))
     elif photo_url and not photo_persisted:
@@ -114,7 +126,8 @@ async def _create_report_core(
 
     return {
         "id": report_id,
-        "status": "criado",
+        "status": report_row.get("status") or "em_validacao",
+        "validation_deadline": report_row.get("validation_deadline") or row.get("validation_deadline"),
         "type": tipo,
         "severity": severidade,
         "lat": lat,
@@ -175,6 +188,15 @@ async def _run_ai_pipeline(report_id: str, photo_url: str, weather_snapshot: Opt
         await persist_validation(report_id, report)
     except Exception as e:
         logger.warning("AI pipeline failed for %s: %s", report_id, e)
+
+
+async def _notify_nearby_validation(report: dict) -> None:
+    try:
+        from services.push_service import notify_nearby_validation
+
+        await notify_nearby_validation(report)
+    except Exception as e:
+        logger.debug("nearby validation push skipped for %s: %s", report.get("id"), e)
 
 
 @router.post("/api/reports", status_code=201)
@@ -253,7 +275,8 @@ async def create_report_with_photo(
 
 _NEARBY_FIELDS_V3 = (
     "id,type,severity,lat,lon,bairro,description,confirmed_count,created_at,"
-    "photo_url,likes_up,likes_down,status,ai_validation_score"
+    "photo_url,likes_up,likes_down,status,ai_validation_score,"
+    "validation_deadline,validation_verdict,validation_score"
 )
 _NEARBY_FIELDS_V2 = "id,type,severity,lat,lon,bairro,description,confirmed_count,created_at"
 
@@ -564,6 +587,7 @@ _REPORT_FIELDS_V3 = (
     "photo_url,photo_ai_description,photo_ai_confidence,"
     "ai_validation_score,ai_validation_notes,"
     "likes_up,likes_down,status,confirmed_count,"
+    "validation_deadline,validation_verdict,validation_score,validation_summary,validated_at,"
     "weather_snapshot_id,created_at"
 )
 _REPORT_FIELDS_V2 = "id,type,severity,lat,lon,bairro,description,confirmed_count,created_at"

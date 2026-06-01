@@ -49,14 +49,18 @@ async def save_subscription(sub: dict, ip_hash: str = "unknown") -> None:
     db = _get_supabase()
     if db:
         try:
+            row = {
+                "ip_hash": ip_hash,
+                "endpoint": endpoint,
+                "p256dh": p256dh,
+                "auth": auth,
+            }
+            if sub.get("lat") is not None and sub.get("lon") is not None:
+                row["lat"] = sub.get("lat")
+                row["lon"] = sub.get("lon")
             await asyncio.to_thread(
                 lambda: db.table("push_subscriptions")
-                    .upsert({
-                        "ip_hash": ip_hash,
-                        "endpoint": endpoint,
-                        "p256dh": p256dh,
-                        "auth": auth,
-                    }, on_conflict="endpoint")
+                    .upsert(row, on_conflict="endpoint")
                     .execute()
             )
         except Exception as e:
@@ -90,6 +94,30 @@ async def load_subscriptions() -> list[dict]:
         except Exception as e:
             logger.warning(f"push load supabase: {e}")
     return list(_subscriptions)
+
+
+async def load_subscriptions_with_location() -> list[dict]:
+    db = _get_supabase()
+    if db:
+        try:
+            rows = await asyncio.to_thread(
+                lambda: db.table("push_subscriptions")
+                    .select("endpoint,p256dh,auth,lat,lon")
+                    .not_.is_("lat", "null")
+                    .not_.is_("lon", "null")
+                    .execute()
+            )
+            items = []
+            for row in rows.data or []:
+                if row.get("endpoint") and row.get("p256dh") and row.get("auth"):
+                    item = _to_webpush_subscription(row)
+                    item["lat"] = row.get("lat")
+                    item["lon"] = row.get("lon")
+                    items.append(item)
+            return items
+        except Exception as e:
+            logger.warning(f"push load localized supabase: {e}")
+    return [s for s in _subscriptions if s.get("lat") is not None and s.get("lon") is not None]
 
 
 def _send_one(sub: dict, payload: dict) -> bool:
@@ -147,6 +175,35 @@ async def broadcast_alert(bairro: str, score: int, nivel: str) -> int:
         "url":   "/",
     }
     subs = await load_subscriptions()
+    sent = 0
+    for sub in subs:
+        if await asyncio.to_thread(_send_one, sub, payload):
+            sent += 1
+    return sent
+
+
+async def notify_nearby_validation(report: dict, radius_m: int = 2000) -> int:
+    if not VAPID_PRIVATE_KEY:
+        return 0
+
+    lat = report.get("lat")
+    lon = report.get("lon")
+    if lat is None or lon is None:
+        return 0
+
+    from services.report_validation import filter_nearby_subscriptions
+
+    subs = filter_nearby_subscriptions(
+        await load_subscriptions_with_location(),
+        float(lat),
+        float(lon),
+        radius_m=radius_m,
+    )
+    payload = {
+        "title": "HydraRec — valide um report próximo",
+        "body": f"{report.get('bairro') or 'Recife'}: alguém reportou {report.get('type') or 'ocorrência'}.",
+        "url": f"/?report={report.get('id')}",
+    }
     sent = 0
     for sub in subs:
         if await asyncio.to_thread(_send_one, sub, payload):

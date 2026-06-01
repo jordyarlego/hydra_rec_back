@@ -73,6 +73,9 @@ back_end_hydrarec/
 │   ├── official_importer.py # baixa CSV/JSON do Portal de Dados Abertos
 │   ├── dispatch_router.py   # Triagem v2: org sugerido + auto-título + SLA + duplicatas
 │   ├── priority_engine.py   # combina IA + comunidade + cruzamento → prioridade
+│   ├── analytics.py         # tendências, recomendações rastreáveis e janela 24h
+│   ├── ai_recommender.py    # narração Gemini/fallback das recomendações
+│   ├── report_validation.py # deadline 15min + veredito cidadão determinístico
 │   └── push_service.py      # pywebpush wrapper
 │
 ├── workers/                 # tarefas de background (ENABLE_BACKGROUND_WORKERS=1)
@@ -90,6 +93,8 @@ back_end_hydrarec/
 │   │                             # official_service_requests, hotspots
 │   └── v4_triagem_v2.sql         # bucket, is_urban_problem, kanban_state,
 │                                 # assigned_org, sla_deadline (Triagem v2)
+│   ├── v6_report_push_subscriptions.sql
+│   └── v7_report_validation_timer.sql
 │
 ├── static/                  # build do frontend serve daqui em prod
 ├── tests/                   # pytest, 70 casos
@@ -147,6 +152,7 @@ back_end_hydrarec/
 | GET | `/api/admin/metrics/by-rpa` | Reports por região administrativa |
 | GET | `/api/admin/metrics/by-neighborhood` | Top 20 bairros |
 | GET | `/api/admin/metrics/recurrent-hotspots` | Ruas com reincidência alta |
+| GET | `/api/admin/analytics` | Tendências, recomendações, top prioridades e narração para Mapa Central |
 | GET | `/api/admin/official-data/status` | Status das últimas importações |
 | POST | `/api/admin/official-data/import` | Dispara import background |
 | GET | `/api/admin/official-data/import-status` | Polling do import |
@@ -166,7 +172,7 @@ POST /api/reports/with-photo
         ↓
 1. Validação multipart + tamanho ≤ 5MB
 2. Upload pro Supabase Storage (report-photos/)
-3. Insere row na tabela reports (status='pending')
+3. Insere row na tabela reports (status='em_validacao', `validation_deadline` +15min)
 4. INICIA background task _run_ai_pipeline:
         ↓
    a) ai_vision.describe_photo(url)
@@ -197,6 +203,24 @@ POST /api/reports/with-photo
         ↓
 6. priority_engine combina tudo → prioridade (urgente/alta/media/baixa)
 ```
+
+**Fechamento da validação cidadã (Fase 3.3):**
+
+```
+workers.ai_revalidation a cada 60s
+        ↓
+1. Busca reports status='em_validacao' com validation_deadline vencido
+2. report_validation.calculate_validation_verdict(report)
+   - IA: ai_validation_score
+   - Comunidade: likes_up, likes_down, confirmed_count
+   - Clima: chuva APAC/CEMADEN para alagamento
+   - Foto: presença de foto e photo_ai_is_urban_problem
+3. Atualiza:
+   status = confirmado | provavel | pouca_evidencia | suspeito
+   validation_verdict, validation_score, validation_summary, validated_at
+```
+
+O Gemini/NVIDIA não decide esse veredito final: a regra é determinística e auditável.
 
 **Quando o admin clica "Validar e gerar chamado":**
 
@@ -451,13 +475,14 @@ Em prod, FastAPI serve o build do React de `static/`.
 
 ## 10. Testes
 
-70 casos pytest cobrindo: validator (gates novos), priority engine,
+92+ casos pytest cobrindo: validator (gates novos), priority engine,
 geo cross, weather enrich, APAC parser, auth guard, dispatch router,
-heat index, alerts engine.
+heat index, alerts engine, analytics e validação por timer.
 
 ```bash
 .venv/bin/pytest -q                          # tudo
 .venv/bin/pytest tests/test_ai_validator.py  # só validator
+python3 -m pytest tests/test_report_validation.py tests/test_analytics.py
 ```
 
 ---
@@ -480,6 +505,6 @@ Mapa, IA narrativa, Trajeto, PWA + Push, A11y WCAG AA, Forecast 6h).
 auto. Spec: `docs/superpowers/specs/2026-05-16-triagem-v2-design.md`
 (no monorepo raiz).
 
-**Próximo ciclo:** correções de UX/copy + IA prioriza pela foto +
-integração real com órgãos. Backlog em
-`docs/superpowers/specs/2026-05-16-feedback-ciclo-2-backlog.md`.
+**Ciclo 3 entregue:** reporte simplificado, IA analítica backend,
+Mapa Central do admin, validação por usuários próximos + timer.
+Backlog principal: integração real com API 156/órgãos externos.

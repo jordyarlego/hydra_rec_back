@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 from services.ai_validator import persist_validation
+from services.report_validation import finalize_due_reports
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,8 @@ async def run_once(limit: int = 10) -> int:
             count += 1
         except Exception as e:
             logger.warning("ai revalidation failed for %s: %s", report.get("id"), e)
-    return count
+    closed = await finalize_due_reports(limit=limit)
+    return count + closed
 
 
 async def start(interval_s: int = 60):
