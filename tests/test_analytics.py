@@ -86,3 +86,11 @@ def test_sem_tendencia_sem_recomendacao():
     reports = [_r("lixo", "Centro", 2)]  # 1 report, nada de alta
     trends = aggregate_trends(reports, NOW, window_hours=24)
     assert build_recommendations(trends, NOW) == []
+
+
+def test_volume_sem_historico_nao_gera_cidade():
+    # 12 reports na janela atual, ZERO na anterior (deploy novo) → sem alarme de cidade
+    reports = [_r("buraco", "Centro", 1) for _ in range(12)]
+    trends = aggregate_trends(reports, NOW, window_hours=24)
+    recs = build_recommendations(trends, NOW)
+    assert all(r["scope"] != "cidade" for r in recs)

@@ -5,7 +5,7 @@ resultado em services/ai_recommender.py. Fonte da verdade = estas regras.
 """
 from __future__ import annotations
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 # Categorias de alto risco para priorização das recomendações
@@ -30,7 +30,6 @@ def _parse_dt(value: Optional[str]) -> Optional[datetime]:
 
 def aggregate_trends(reports: list[dict], now: datetime, window_hours: int = 24) -> dict:
     """Agrega contagens da janela atual vs janela anterior e detecta altas."""
-    from datetime import timedelta
     win = timedelta(hours=window_hours)
     cur_start = now - win
     prior_start = now - 2 * win
@@ -61,7 +60,7 @@ def aggregate_trends(reports: list[dict], now: datetime, window_hours: int = 24)
                 "bairro": bairro, "category": category,
                 "current": cur_n, "prior": prior_n, "delta": cur_n - prior_n,
             })
-    rising.sort(key=lambda e: e["delta"], reverse=True)
+    rising.sort(key=lambda e: (-e["delta"], -e["current"], e["bairro"], e["category"]))
 
     return {
         "window_hours": window_hours,
