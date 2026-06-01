@@ -80,3 +80,16 @@ def test_report_descricao_max():
             user_lon=-34.88,
             descricao="x" * 281,
         )
+
+
+def test_report_payload_severidade_opcional():
+    """Usuário não escolhe gravidade — payload válido sem o campo."""
+    from models.schemas import CreateReportPayload
+    p = CreateReportPayload(
+        tipo="alagamento",
+        lat=-8.05,
+        lon=-34.88,
+        user_lat=-8.05,
+        user_lon=-34.88,
+    )
+    assert p.severidade is None

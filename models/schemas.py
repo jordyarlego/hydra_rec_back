@@ -18,7 +18,7 @@ class NarrativeRequest(BaseModel):
 
 class CreateReportPayload(BaseModel):
     tipo: str = Field(..., pattern="^(alagamento|deslizamento|queda_arvore|via_intransitavel|poste_caido|buraco|lixo|iluminacao|outro)$")
-    severidade: str = Field(..., pattern="^(leve|moderado|grave)$")
+    severidade: Optional[str] = Field(None, pattern="^(leve|moderado|grave)$")
     lat: float = Field(..., ge=-8.16, le=-7.93)
     lon: float = Field(..., ge=-35.02, le=-34.83)
     user_lat: float = Field(..., ge=-8.16, le=-7.93)
