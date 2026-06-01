@@ -56,3 +56,33 @@ def test_lista_vazia():
     assert t["current_total"] == 0
     assert t["by_category"] == []
     assert t["rising"] == []
+
+
+from services.analytics import build_recommendations
+
+
+def test_recomenda_para_tendencia_de_alta():
+    trends = aggregate_trends(_sample(), NOW, window_hours=24)
+    recs = build_recommendations(trends, NOW)
+    assert len(recs) == 1
+    rec = recs[0]
+    assert rec["scope"] == {"bairro": "Boa Viagem", "category": "alagamento"}
+    assert rec["priority"] == "alta"
+    assert "3 reports de alagamento em Boa Viagem" in rec["cause"]
+    assert rec["action"]
+    assert rec["id"] == "alagamento:Boa Viagem"
+
+
+def test_volume_alto_gera_recomendacao_cidade():
+    # 12 reports na janela atual, 4 na anterior → pico de volume
+    reports = [_r("buraco", "Centro", 1) for _ in range(12)]
+    reports += [_r("buraco", "Centro", 30) for _ in range(4)]
+    trends = aggregate_trends(reports, NOW, window_hours=24)
+    recs = build_recommendations(trends, NOW)
+    assert any(r["scope"] == "cidade" for r in recs)
+
+
+def test_sem_tendencia_sem_recomendacao():
+    reports = [_r("lixo", "Centro", 2)]  # 1 report, nada de alta
+    trends = aggregate_trends(reports, NOW, window_hours=24)
+    assert build_recommendations(trends, NOW) == []
